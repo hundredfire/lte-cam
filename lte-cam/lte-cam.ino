@@ -609,16 +609,6 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec) {
         // if we are using the ESP32's system clock now.
         return true;
     }
-        // Wait for OK, but we don't strictly care if it fails
-        long start = millis();
-        while(millis() - start < 1000) {
-             if (SerialAT.available()) {
-                String line = SerialAT.readStringUntil('\n');
-                if (line.indexOf("OK") != -1) break;
-             }
-        }
-        return true;
-    }
 
     SerialMon.println("NTP Sync Failed.");
     return false;
