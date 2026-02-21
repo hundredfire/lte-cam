@@ -52,7 +52,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
-    SerialMon.println("Firmware Version: TimeSync-Fix-v3");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v4");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -574,11 +574,11 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, fl
 
     // Strict validation: year must be between 2024 and 2035 to be considered valid
     if (*year >= 2024 && *year <= 2035) {
-        SerialMon.println("Time valid (NITZ/Saved).");
-        return true;
+        SerialMon.println("Time valid (NITZ/Saved). However, forcing NTP sync for reliability...");
+        // Do NOT return true here. Proceed to force NTP update.
+    } else {
+        SerialMon.printf("Time invalid or not set (Year: %d). Attempting NTP sync...\n", *year);
     }
-
-    SerialMon.printf("Time invalid or not set (Year: %d). Attempting NTP sync...\n", *year);
 
     if (manualNtpSync(year, month, day, hour, min, sec, timezone)) {
         // Double-check the year from NTP is reasonable.
