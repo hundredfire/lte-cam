@@ -57,7 +57,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
-    SerialMon.println("Firmware Version: TimeSync-Fix-v7");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v8");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -175,28 +175,27 @@ void setup() {
     while (!syncTime(&year, &month, &day, &hour, &min, &sec)) {
         SerialMon.println("Failed to sync time! Retrying in 30 seconds... (Loop active)");
 
-        // Check Internet Connectivity
-        if (!checkInternet()) {
-            SerialMon.println("Internet check failed. Forcing GPRS reconnection...");
-            modem.gprsDisconnect();
-            delay(3000);
-
-            // Check network status and reconnect if needed
-            if (!modem.isNetworkConnected()) {
-                SerialMon.println("Network disconnected. Reconnecting...");
-                if (!modem.waitForNetwork(60000L)) {
-                     SerialMon.println("Network connection failed.");
-                     // Don't continue here, let the loop delay happen
-                }
+        // Only ensure Network is attached (CS/PS domain)
+        if (!modem.isNetworkConnected()) {
+            SerialMon.println("Network disconnected. Waiting for network...");
+            if (!modem.waitForNetwork(60000L)) {
+                 SerialMon.println("Network connection failed.");
+                 continue;
             }
+        }
 
-            // Reconnect GPRS (bearer)
-            SerialMon.println("Reconnecting GPRS...");
-            if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+        // Ensure GPRS context is active IF it reports as disconnected.
+        if (!modem.isGprsConnected()) {
+             SerialMon.println("GPRS disconnected. Attempting to connect...");
+             if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
                  SerialMon.println("GPRS connection failed.");
-            }
-        } else {
-             SerialMon.println("Internet check passed, but NTP failed. Waiting before retry...");
+                 continue;
+             }
+        }
+
+        // Check Internet Connectivity - Informational
+        if (!checkInternet()) {
+            SerialMon.println("Internet check failed. Waiting for connectivity to stabilize...");
         }
 
         delay(30000);
