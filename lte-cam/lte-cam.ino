@@ -19,6 +19,9 @@ const bool DEBUG_MODE = false;
 const int  DEBUG_SLEEP_SECONDS = 120;   
 // Schedule times in HH:mm format
 const char* schedules[] = {"10:00", "15:00"};
+
+// Timezone offset in hours (e.g., 2.0 for GMT+2, -5.0 for GMT-5)
+const float TIMEZONE_OFFSET = 0.0;
 // ==========================================
 
 #define SerialMon Serial
@@ -28,6 +31,7 @@ int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int curr
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
 void waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
+bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone);
 
 void setup() {
     // === MOVED VARIABLES TO THE TOP TO FIX GOTO SCOPE ERROR ===
@@ -158,8 +162,12 @@ void setup() {
         goto sleep_routine;
     }
 
-    if (!modem.getNetworkTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
+    if (!syncTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
+        SerialMon.println("Failed to sync time! Sleep calculation may be wrong.");
         hour = -1; 
+    } else {
+        SerialMon.printf("Current Time: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
+                         year, month, day, hour, min, sec, timezone);
     }
 
 // --- START OF WARM-UP LOOP ---
@@ -176,7 +184,7 @@ void setup() {
 
     fb = esp_camera_fb_get();
     if (fb) { 
-        SerialMon.printf("Photo taken! Size: %zu bytes. Uploading to Telegram...\n", fb->buf);
+        SerialMon.printf("Photo taken! Size: %zu bytes. Uploading to Telegram...\n", fb->len);
         sendPhotoViaBuiltInHTTP(fb); 
         esp_camera_fb_return(fb); 
     }
@@ -370,6 +378,68 @@ void waitModemResponse(int timeoutMs, String expectedToken) {
             if(res.length() > 0) SerialMon.println("  [Modem] " + res);
             if(res.indexOf(expectedToken) != -1) break;
         }
+    }
+}
+
+bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone) {
+    // Attempt 1: Get Network Time directly (NITZ)
+    SerialMon.println("Attempting to read network time...");
+    modem.getNetworkTime(year, month, day, hour, min, sec, timezone);
+
+    // Check if valid year (assuming we are past 2023)
+    if (*year > 2023) {
+        SerialMon.println("Time valid (NITZ/Saved).");
+        return true;
+    }
+
+    SerialMon.println("Time invalid or not set. Attempting NTP sync...");
+
+    // Convert float timezone (hours) to quarters for AT+CNTP
+    // Range -48 to +48
+    int tz_quarters = (int)(TIMEZONE_OFFSET * 4);
+
+    // Configure NTP
+    // AT+CNTP="pool.ntp.org",<tz_quarters>
+    SerialAT.print("AT+CNTP=\"pool.ntp.org\",");
+    SerialAT.println(tz_quarters);
+    waitModemResponse(2000);
+
+    // Start NTP Sync
+    SerialAT.println("AT+CNTP");
+
+    // Wait for +CNTP: <err> response
+    // Success is +CNTP: 1,0,... or +CNTP: 0 (depending on modem firmware)
+    // Actually typically +CNTP: <cid>,<err> on some, or just +CNTP: <err>
+    // A7670/SIM7600 usually returns +CNTP: <err>
+    // 0 = Success, 1 = Network Error, 61 = DNS Error, etc.
+
+    long start = millis();
+    bool ntpSuccess = false;
+    while (millis() - start < 60000) { // Wait up to 60s
+        if (SerialAT.available()) {
+            String line = SerialAT.readStringUntil('\n');
+            line.trim();
+            if (line.length() > 0) SerialMon.println("  [NTP] " + line);
+
+            if (line.indexOf("+CNTP: 0") != -1 || line.indexOf("+CNTP: 1,0") != -1) {
+                ntpSuccess = true;
+                break;
+            } else if (line.indexOf("+CNTP:") != -1 && line.indexOf("Error") == -1) {
+                // Determine if other codes mean failure
+                // Assuming any +CNTP: x where x!=0 is failure, but let's check
+                // If it contains "0", it's likely success.
+            }
+        }
+    }
+
+    if (ntpSuccess) {
+        SerialMon.println("NTP Sync Successful. Refreshing time...");
+        // Wait a moment for local clock to update
+        delay(1000);
+        return modem.getNetworkTime(year, month, day, hour, min, sec, timezone);
+    } else {
+        SerialMon.println("NTP Sync Failed.");
+        return false;
     }
 }
 
