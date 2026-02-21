@@ -6,6 +6,7 @@
 #include <Wire.h>                    
 #include "utilities.h"               
 #include "esp_camera.h"
+#include <driver/gpio.h>
 #include <TinyGsmClient.h>
 
 // Load our private credentials
@@ -16,12 +17,14 @@
 // ==========================================
 const bool DEBUG_MODE = false;           
 const int  DEBUG_SLEEP_SECONDS = 120;   
+// Schedule times in HH:mm format
+const char* schedules[] = {"10:00", "15:00"};
 // ==========================================
 
 #define SerialMon Serial
 TinyGsm modem(SerialAT);
 
-int calculateSleepSeconds(int currentHour, int currentMin, int currentSec);
+int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec);
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
 void waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
@@ -35,6 +38,11 @@ void setup() {
 
     SerialMon.begin(115200);
     delay(1000);
+
+#ifdef MODEM_RESET_PIN
+    // Release reset GPIO hold if it was held during sleep
+    gpio_hold_dis((gpio_num_t)MODEM_RESET_PIN);
+#endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
 
@@ -174,18 +182,45 @@ void setup() {
     }
 
 sleep_routine:
-    modem.poweroff(); 
+    SerialMon.println("Enter modem power off!");
+    if (modem.poweroff()) {
+        SerialMon.println("Modem power off command sent!");
+    } else {
+        SerialMon.println("Modem power off command failed!");
+    }
+
+    // Wait for modem to actually shutdown
+    delay(5000);
+
+    SerialMon.println("Check modem response...");
+    while (modem.testAT()) {
+        SerialMon.print(".");
+        delay(500);
+    }
+    SerialMon.println("\nModem is not responding, power off confirmed!");
+
     setCameraPower(false); 
     Wire.end();            
 
 #ifdef BOARD_POWERON_PIN
+    // Turn on DC boost to power off the modem
     digitalWrite(BOARD_POWERON_PIN, LOW); 
 #endif
 
-    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSeconds(hour, min, sec) : 3600);
+#ifdef MODEM_RESET_PIN
+    // Keep it low during the sleep period.
+    pinMode(MODEM_RESET_PIN, OUTPUT);
+    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
+    gpio_hold_en((gpio_num_t)MODEM_RESET_PIN);
+    gpio_deep_sleep_hold_en();
+#endif
+
+    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec) : 3600);
     SerialMon.printf("Going to deep sleep for %d seconds...\n", sleepSeconds);
     esp_sleep_enable_timer_wakeup((uint64_t)sleepSeconds * 1000000ULL);
+    delay(200);
     esp_deep_sleep_start();
+    SerialMon.println("This will never be printed");
 }
 
 void loop() {}
@@ -338,12 +373,34 @@ void waitModemResponse(int timeoutMs, String expectedToken) {
     }
 }
 
-int calculateSleepSeconds(int currentHour, int currentMin, int currentSec) {
+int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec) {
     int currentSecondsOfDay = (currentHour * 3600) + (currentMin * 60) + currentSec;
-    int target1 = 10 * 3600; 
-    int target2 = 15 * 3600; 
+    int minDiff = 24 * 3600 + 1; // Start with a value larger than a day
+    int earliestSchedule = 24 * 3600 + 1;
+    int numSchedules = sizeof(schedules) / sizeof(schedules[0]);
 
-    if (currentSecondsOfDay < target1) return target1 - currentSecondsOfDay;
-    else if (currentSecondsOfDay < target2) return target2 - currentSecondsOfDay;
-    else return (24 * 3600 - currentSecondsOfDay) + target1;
+    for (int i = 0; i < numSchedules; i++) {
+        String timeStr = String(schedules[i]);
+        int h = timeStr.substring(0, timeStr.indexOf(':')).toInt();
+        int m = timeStr.substring(timeStr.indexOf(':') + 1).toInt();
+        int scheduleSeconds = h * 3600 + m * 60;
+
+        if (scheduleSeconds < earliestSchedule) {
+            earliestSchedule = scheduleSeconds;
+        }
+
+        if (scheduleSeconds > currentSecondsOfDay) {
+            int diff = scheduleSeconds - currentSecondsOfDay;
+            if (diff < minDiff) {
+                minDiff = diff;
+            }
+        }
+    }
+
+    if (minDiff > 24 * 3600) {
+        // No future schedule today, wrap to the earliest schedule tomorrow
+        return (24 * 3600 - currentSecondsOfDay) + earliestSchedule;
+    }
+
+    return minDiff;
 }
