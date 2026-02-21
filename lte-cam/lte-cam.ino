@@ -165,13 +165,32 @@ void setup() {
         goto sleep_routine;
     }
 
-    if (!syncTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
-        SerialMon.println("Failed to sync time! Sleep calculation may be wrong.");
-        hour = -1; 
-    } else {
-        SerialMon.printf("Current Time: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
-                         year, month, day, hour, min, sec, timezone);
+    // Loop until we get a valid time
+    while (!syncTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
+        SerialMon.println("Failed to sync time! Retrying in 5 seconds...");
+        delay(5000);
+
+        // Check network status and reconnect if needed
+        if (!modem.isNetworkConnected()) {
+            SerialMon.println("Network disconnected. Reconnecting...");
+            if (!modem.waitForNetwork(60000L)) {
+                 SerialMon.println("Network connection failed.");
+                 continue;
+            }
+        }
+
+        // Check GPRS status (bearer)
+        if (!modem.isGprsConnected()) {
+             SerialMon.println("GPRS disconnected. Reconnecting...");
+             if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+                 SerialMon.println("GPRS connection failed.");
+                 continue;
+             }
+        }
     }
+
+    SerialMon.printf("Current Time: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
+                     year, month, day, hour, min, sec, timezone);
 
 // --- START OF WARM-UP LOOP ---
     SerialMon.println("Warming up sensor for auto-exposure...");
