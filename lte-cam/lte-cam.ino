@@ -52,6 +52,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v3");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -165,13 +166,32 @@ void setup() {
         goto sleep_routine;
     }
 
-    if (!syncTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
-        SerialMon.println("Failed to sync time! Sleep calculation may be wrong.");
-        hour = -1; 
-    } else {
-        SerialMon.printf("Current Time: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
-                         year, month, day, hour, min, sec, timezone);
+    // Loop until we get a valid time
+    while (!syncTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
+        SerialMon.println("Failed to sync time! Retrying in 5 seconds... (Loop active)");
+        delay(5000);
+
+        // Check network status and reconnect if needed
+        if (!modem.isNetworkConnected()) {
+            SerialMon.println("Network disconnected. Reconnecting...");
+            if (!modem.waitForNetwork(60000L)) {
+                 SerialMon.println("Network connection failed.");
+                 continue;
+            }
+        }
+
+        // Check GPRS status (bearer)
+        if (!modem.isGprsConnected()) {
+             SerialMon.println("GPRS disconnected. Reconnecting...");
+             if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+                 SerialMon.println("GPRS connection failed.");
+                 continue;
+             }
+        }
     }
+
+    SerialMon.printf("Current Time: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
+                     year, month, day, hour, min, sec, timezone);
 
 // --- START OF WARM-UP LOOP ---
     SerialMon.println("Warming up sensor for auto-exposure...");
@@ -561,6 +581,12 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, fl
     SerialMon.printf("Time invalid or not set (Year: %d). Attempting NTP sync...\n", *year);
 
     if (manualNtpSync(year, month, day, hour, min, sec, timezone)) {
+        // Double-check the year from NTP is reasonable.
+        if (*year < 2024 || *year > 2035) {
+            SerialMon.printf("NTP Sync succeeded but returned invalid year: %d\n", *year);
+            return false;
+        }
+
         // Update Modem Internal Clock
         char buffer[50];
         int tz_quarters = (int)(*timezone * 4);
