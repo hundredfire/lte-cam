@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>                    
+#include <time.h>
 #include "utilities.h"               
 #include "esp_camera.h"
 #include <driver/gpio.h>
@@ -33,6 +34,7 @@ void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
 void waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
 bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone);
+bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone);
 
 void setup() {
     // === MOVED VARIABLES TO THE TOP TO FIX GOTO SCOPE ERROR ===
@@ -382,6 +384,165 @@ void waitModemResponse(int timeoutMs, String expectedToken) {
     }
 }
 
+bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone) {
+    SerialMon.println("Attempting Manual UDP NTP Sync...");
+
+    // Server list to try
+    const char* ntpServers[] = {"pool.ntp.org", "time.google.com", "time.nist.gov"};
+    int numServers = 3;
+
+    // Ensure manual receive mode
+    SerialAT.println("AT+CIPRXGET=1");
+    waitModemResponse(1000, "OK");
+
+    for (int i = 0; i < numServers; i++) {
+        SerialMon.print("Connecting to UDP: ");
+        SerialMon.println(ntpServers[i]);
+
+        // Close any previous socket 0 just in case
+        SerialAT.println("AT+CIPCLOSE=0");
+        waitModemResponse(500);
+
+        SerialAT.print("AT+CIPOPEN=0,\"UDP\",\"");
+        SerialAT.print(ntpServers[i]);
+        SerialAT.println("\",123");
+
+        bool connected = false;
+        long start = millis();
+        while(millis() - start < 10000) {
+            if (SerialAT.available()) {
+                String line = SerialAT.readStringUntil('\n');
+                line.trim();
+                if (line.length() > 0) SerialMon.println("  [UDP] " + line);
+
+                if (line.indexOf("+CIPOPEN: 0,0") != -1) {
+                    connected = true;
+                    break;
+                }
+                if (line.indexOf("ERROR") != -1) break;
+            }
+        }
+
+        if (!connected) {
+            SerialMon.println("UDP Connection failed. Trying next server...");
+            continue;
+        }
+
+        // Send NTP Request
+        byte ntpPacket[48];
+        memset(ntpPacket, 0, 48);
+        ntpPacket[0] = 0x1B; // LI=0, VN=3, Mode=3 (Client)
+
+        SerialAT.print("AT+CIPSEND=0,48");
+        SerialAT.println();
+
+        // Wait for prompt >
+        start = millis();
+        bool prompt = false;
+        while(millis() - start < 3000) {
+            if (SerialAT.available()) {
+                char c = SerialAT.read();
+                if (c == '>') {
+                    prompt = true;
+                    break;
+                }
+            }
+        }
+
+        if (prompt) {
+            SerialAT.write(ntpPacket, 48);
+
+            // Wait for data
+            start = millis();
+            bool dataReceived = false;
+            while(millis() - start < 5000) {
+                 if (SerialAT.available()) {
+                    String line = SerialAT.readStringUntil('\n');
+                    line.trim();
+                    if (line.length() > 0) SerialMon.println("  [UDP] " + line);
+
+                    if (line.indexOf("+CIPRXGET: 1") != -1) {
+                        dataReceived = true;
+                        break;
+                    }
+                 }
+            }
+
+            if (dataReceived) {
+                SerialAT.println("AT+CIPRXGET=2,0,48");
+
+                // We need to parse this manually and robustly.
+                // Read until we find the header line: +CIPRXGET: 2,0,48,0
+                start = millis();
+                bool headerFound = false;
+                while(millis() - start < 2000) {
+                    if (SerialAT.available()) {
+                        String line = SerialAT.readStringUntil('\n');
+                        if (line.indexOf("+CIPRXGET: 2,") != -1) {
+                            headerFound = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (headerFound) {
+                    // Now read 48 bytes
+                    byte buffer[48];
+                    int bytesRead = 0;
+                    start = millis();
+                    while (bytesRead < 48 && millis() - start < 3000) {
+                        if (SerialAT.available()) {
+                            buffer[bytesRead++] = SerialAT.read();
+                        }
+                    }
+
+                    if (bytesRead == 48) {
+                        // Success!
+                        SerialAT.println("AT+CIPCLOSE=0");
+                        waitModemResponse(1000);
+
+                        // Parse timestamp
+                        unsigned long highWord = (unsigned long)buffer[40] << 8 | buffer[41];
+                        unsigned long lowWord = (unsigned long)buffer[42] << 8 | buffer[43];
+                        unsigned long secsSince1900 = highWord << 16 | lowWord;
+                        unsigned long seventyYears = 2208988800UL;
+                        unsigned long epoch = secsSince1900 - seventyYears;
+
+                        // Apply timezone
+                        epoch += (long)(TIMEZONE_OFFSET * 3600);
+
+                        struct tm *ptm = gmtime((time_t*)&epoch);
+
+                        *year = ptm->tm_year + 1900;
+                        *month = ptm->tm_mon + 1;
+                        *day = ptm->tm_mday;
+                        *hour = ptm->tm_hour;
+                        *min = ptm->tm_min;
+                        *sec = ptm->tm_sec;
+                        *timezone = TIMEZONE_OFFSET;
+
+                        SerialMon.println("NTP Sync Successful!");
+                        return true;
+                    } else {
+                        SerialMon.println("Failed to read full NTP packet.");
+                    }
+                } else {
+                     SerialMon.println("Failed to find data header.");
+                }
+            } else {
+                 SerialMon.println("No data received.");
+            }
+        } else {
+             SerialMon.println("No Prompt received.");
+        }
+
+        SerialAT.println("AT+CIPCLOSE=0");
+        waitModemResponse(1000);
+    }
+
+    return false;
+}
+
 bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone) {
     // Attempt 1: Get Network Time directly (NITZ)
     SerialMon.println("Attempting to read network time...");
@@ -399,53 +560,26 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, fl
 
     SerialMon.printf("Time invalid or not set (Year: %d). Attempting NTP sync...\n", *year);
 
-    // Convert float timezone (hours) to quarters for AT+CNTP
-    // Range -48 to +48
-    int tz_quarters = (int)(TIMEZONE_OFFSET * 4);
-
-    // Configure NTP
-    // AT+CNTP="pool.ntp.org",<tz_quarters>
-    SerialAT.print("AT+CNTP=\"pool.ntp.org\",");
-    SerialAT.println(tz_quarters);
-    waitModemResponse(2000);
-
-    // Start NTP Sync
-    SerialAT.println("AT+CNTP");
-
-    // Wait for +CNTP: <err> response
-    // Success is +CNTP: 1,0,... or +CNTP: 0 (depending on modem firmware)
-    // Actually typically +CNTP: <cid>,<err> on some, or just +CNTP: <err>
-    // A7670/SIM7600 usually returns +CNTP: <err>
-    // 0 = Success, 1 = Network Error, 61 = DNS Error, etc.
-
-    long start = millis();
-    bool ntpSuccess = false;
-    while (millis() - start < 60000) { // Wait up to 60s
-        if (SerialAT.available()) {
-            String line = SerialAT.readStringUntil('\n');
-            line.trim();
-            if (line.length() > 0) SerialMon.println("  [NTP] " + line);
-
-            if (line.indexOf("+CNTP: 0") != -1 || line.indexOf("+CNTP: 1,0") != -1) {
-                ntpSuccess = true;
-                break;
-            } else if (line.indexOf("+CNTP:") != -1 && line.indexOf("Error") == -1) {
-                // Determine if other codes mean failure
-                // Assuming any +CNTP: x where x!=0 is failure, but let's check
-                // If it contains "0", it's likely success.
-            }
+    if (manualNtpSync(year, month, day, hour, min, sec, timezone)) {
+        // Update Modem Internal Clock
+        char buffer[50];
+        int tz_quarters = (int)(*timezone * 4);
+        sprintf(buffer, "AT+CCLK=\"%02d/%02d/%02d,%02d:%02d:%02d%+03d\"",
+                *year % 100, *month, *day, *hour, *min, *sec, tz_quarters);
+        SerialAT.println(buffer);
+        // Wait for OK, but we don't strictly care if it fails
+        long start = millis();
+        while(millis() - start < 1000) {
+             if (SerialAT.available()) {
+                String line = SerialAT.readStringUntil('\n');
+                if (line.indexOf("OK") != -1) break;
+             }
         }
+        return true;
     }
 
-    if (ntpSuccess) {
-        SerialMon.println("NTP Sync Successful. Refreshing time...");
-        // Wait a moment for local clock to update
-        delay(1000);
-        return modem.getNetworkTime(year, month, day, hour, min, sec, timezone);
-    } else {
-        SerialMon.println("NTP Sync Failed.");
-        return false;
-    }
+    SerialMon.println("NTP Sync Failed.");
+    return false;
 }
 
 int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec) {
