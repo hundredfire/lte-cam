@@ -28,6 +28,7 @@ const char* TZ_INFO = "CET-1CEST,M3.5.0,M10.5.0/3";
 
 #define SerialMon Serial
 TinyGsm modem(SerialAT);
+TinyGsmClient client(modem);
 
 int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec);
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
@@ -35,6 +36,7 @@ void waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
 bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec); // Removed timezone float
 bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec);
+bool checkInternet();
 
 void setup() {
     // === MOVED VARIABLES TO THE TOP TO FIX GOTO SCOPE ERROR ===
@@ -55,7 +57,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
-    SerialMon.println("Firmware Version: TimeSync-Fix-v6");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v7");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -173,24 +175,28 @@ void setup() {
     while (!syncTime(&year, &month, &day, &hour, &min, &sec)) {
         SerialMon.println("Failed to sync time! Retrying in 30 seconds... (Loop active)");
 
-        // Force GPRS disconnect/reconnect to clear potentially stuck bearer (fixes +CIPOPEN: 0,3 error)
-        SerialMon.println("Forcing GPRS reconnection...");
-        modem.gprsDisconnect();
-        delay(3000);
+        // Check Internet Connectivity
+        if (!checkInternet()) {
+            SerialMon.println("Internet check failed. Forcing GPRS reconnection...");
+            modem.gprsDisconnect();
+            delay(3000);
 
-        // Check network status and reconnect if needed
-        if (!modem.isNetworkConnected()) {
-            SerialMon.println("Network disconnected. Reconnecting...");
-            if (!modem.waitForNetwork(60000L)) {
-                 SerialMon.println("Network connection failed.");
-                 // Don't continue here, let the loop delay happen
+            // Check network status and reconnect if needed
+            if (!modem.isNetworkConnected()) {
+                SerialMon.println("Network disconnected. Reconnecting...");
+                if (!modem.waitForNetwork(60000L)) {
+                     SerialMon.println("Network connection failed.");
+                     // Don't continue here, let the loop delay happen
+                }
             }
-        }
 
-        // Reconnect GPRS (bearer)
-        SerialMon.println("Reconnecting GPRS...");
-        if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
-             SerialMon.println("GPRS connection failed.");
+            // Reconnect GPRS (bearer)
+            SerialMon.println("Reconnecting GPRS...");
+            if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+                 SerialMon.println("GPRS connection failed.");
+            }
+        } else {
+             SerialMon.println("Internet check passed, but NTP failed. Waiting before retry...");
         }
 
         delay(30000);
@@ -273,6 +279,18 @@ sleep_routine:
 }
 
 void loop() {}
+
+bool checkInternet() {
+    SerialMon.print("Checking Internet connectivity (TCP -> google.com:80)... ");
+    if (client.connect("google.com", 80)) {
+        SerialMon.println("OK");
+        client.stop();
+        return true;
+    } else {
+        SerialMon.println("Failed");
+        return false;
+    }
+}
 
 bool setCameraPower(bool enable) {
     static bool started = false;
