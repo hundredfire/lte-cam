@@ -580,6 +580,12 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, fl
     SerialMon.printf("Time invalid or not set (Year: %d). Attempting NTP sync...\n", *year);
 
     if (manualNtpSync(year, month, day, hour, min, sec, timezone)) {
+        // Double-check the year from NTP is reasonable.
+        if (*year < 2024 || *year > 2035) {
+            SerialMon.printf("NTP Sync succeeded but returned invalid year: %d\n", *year);
+            return false;
+        }
+
         // Update Modem Internal Clock
         char buffer[50];
         int tz_quarters = (int)(*timezone * 4);
