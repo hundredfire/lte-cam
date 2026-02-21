@@ -387,6 +387,10 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, fl
     SerialMon.println("Attempting to read network time...");
     modem.getNetworkTime(year, month, day, hour, min, sec, timezone);
 
+    // Verbose logging of raw network time
+    SerialMon.printf("Network time raw: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
+                     *year, *month, *day, *hour, *min, *sec, *timezone);
+
     // Strict validation: year must be between 2024 and 2035 to be considered valid
     if (*year >= 2024 && *year <= 2035) {
         SerialMon.println("Time valid (NITZ/Saved).");
