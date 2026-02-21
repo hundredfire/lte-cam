@@ -21,7 +21,8 @@ const int  DEBUG_SLEEP_SECONDS = 120;
 const char* schedules[] = {"10:00", "15:00"};
 
 // Timezone offset in hours (e.g., 2.0 for GMT+2, -5.0 for GMT-5)
-const float TIMEZONE_OFFSET = 0.0;
+// Default to 1.0 (e.g., Paris/CET)
+const float TIMEZONE_OFFSET = 1.0;
 // ==========================================
 
 #define SerialMon Serial
@@ -386,13 +387,17 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, fl
     SerialMon.println("Attempting to read network time...");
     modem.getNetworkTime(year, month, day, hour, min, sec, timezone);
 
-    // Check if valid year (assuming we are past 2023)
-    if (*year > 2023) {
+    // Verbose logging of raw network time
+    SerialMon.printf("Network time raw: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
+                     *year, *month, *day, *hour, *min, *sec, *timezone);
+
+    // Strict validation: year must be between 2024 and 2035 to be considered valid
+    if (*year >= 2024 && *year <= 2035) {
         SerialMon.println("Time valid (NITZ/Saved).");
         return true;
     }
 
-    SerialMon.println("Time invalid or not set. Attempting NTP sync...");
+    SerialMon.printf("Time invalid or not set (Year: %d). Attempting NTP sync...\n", *year);
 
     // Convert float timezone (hours) to quarters for AT+CNTP
     // Range -48 to +48
