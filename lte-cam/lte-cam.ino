@@ -52,6 +52,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v3");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -167,7 +168,7 @@ void setup() {
 
     // Loop until we get a valid time
     while (!syncTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
-        SerialMon.println("Failed to sync time! Retrying in 5 seconds...");
+        SerialMon.println("Failed to sync time! Retrying in 5 seconds... (Loop active)");
         delay(5000);
 
         // Check network status and reconnect if needed
