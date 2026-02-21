@@ -21,9 +21,9 @@ const int  DEBUG_SLEEP_SECONDS = 120;
 // Schedule times in HH:mm format
 const char* schedules[] = {"10:00", "15:00"};
 
-// Timezone offset in hours (e.g., 2.0 for GMT+2, -5.0 for GMT-5)
-// Default to 1.0 (e.g., Paris/CET)
-const float TIMEZONE_OFFSET = 1.0;
+// Timezone handling using POSIX standard (Paris: CET/CEST)
+// See https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv for more
+const char* TZ_INFO = "CET-1CEST,M3.5.0,M10.5.0/3";
 // ==========================================
 
 #define SerialMon Serial
@@ -33,18 +33,21 @@ int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int curr
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
 void waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
-bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone);
-bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone);
+bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec); // Removed timezone float
+bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec);
 
 void setup() {
     // === MOVED VARIABLES TO THE TOP TO FIX GOTO SCOPE ERROR ===
     camera_fb_t * fb = nullptr; 
     int year = 0, month = 0, day = 0, hour = -1, min = 0, sec = 0;
-    float timezone = 0;
     bool gotIP = false; 
 
     SerialMon.begin(115200);
     delay(1000);
+
+    // Set Timezone rules
+    setenv("TZ", TZ_INFO, 1);
+    tzset();
 
 #ifdef MODEM_RESET_PIN
     // Release reset GPIO hold if it was held during sleep
@@ -52,7 +55,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
-    SerialMon.println("Firmware Version: TimeSync-Fix-v5");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v6");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -167,7 +170,7 @@ void setup() {
     }
 
     // Loop until we get a valid time
-    while (!syncTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
+    while (!syncTime(&year, &month, &day, &hour, &min, &sec)) {
         SerialMon.println("Failed to sync time! Retrying in 30 seconds... (Loop active)");
 
         // Force GPRS disconnect/reconnect to clear potentially stuck bearer (fixes +CIPOPEN: 0,3 error)
@@ -193,8 +196,20 @@ void setup() {
         delay(30000);
     }
 
-    SerialMon.printf("Current Time: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
-                     year, month, day, hour, min, sec, timezone);
+    // Re-fetch time after setup to ensure we have the latest adjusted local time
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+        year = timeinfo.tm_year + 1900;
+        month = timeinfo.tm_mon + 1;
+        day = timeinfo.tm_mday;
+        hour = timeinfo.tm_hour;
+        min = timeinfo.tm_min;
+        sec = timeinfo.tm_sec;
+        SerialMon.printf("Current Local Time: %04d-%02d-%02d %02d:%02d:%02d\n",
+                         year, month, day, hour, min, sec);
+    } else {
+        SerialMon.println("Failed to obtain local time from system clock.");
+    }
 
 // --- START OF WARM-UP LOOP ---
     SerialMon.println("Warming up sensor for auto-exposure...");
@@ -407,7 +422,7 @@ void waitModemResponse(int timeoutMs, String expectedToken) {
     }
 }
 
-bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone) {
+bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec) {
     SerialMon.println("Attempting Manual UDP NTP Sync...");
 
     // Server list to try
@@ -531,21 +546,27 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                         unsigned long seventyYears = 2208988800UL;
                         unsigned long epoch = secsSince1900 - seventyYears;
 
-                        // Apply timezone
-                        epoch += (long)(TIMEZONE_OFFSET * 3600);
+                        // Set system time (UTC)
+                        struct timeval tv;
+                        tv.tv_sec = epoch;
+                        tv.tv_usec = 0;
+                        settimeofday(&tv, NULL);
 
-                        struct tm *ptm = gmtime((time_t*)&epoch);
-
-                        *year = ptm->tm_year + 1900;
-                        *month = ptm->tm_mon + 1;
-                        *day = ptm->tm_mday;
-                        *hour = ptm->tm_hour;
-                        *min = ptm->tm_min;
-                        *sec = ptm->tm_sec;
-                        *timezone = TIMEZONE_OFFSET;
-
-                        SerialMon.println("NTP Sync Successful!");
-                        return true;
+                        // Get local time with TZ applied
+                        struct tm timeinfo;
+                        if (getLocalTime(&timeinfo)) {
+                            *year = timeinfo.tm_year + 1900;
+                            *month = timeinfo.tm_mon + 1;
+                            *day = timeinfo.tm_mday;
+                            *hour = timeinfo.tm_hour;
+                            *min = timeinfo.tm_min;
+                            *sec = timeinfo.tm_sec;
+                            SerialMon.println("NTP Sync Successful & System Time Set!");
+                            return true;
+                        } else {
+                            SerialMon.println("NTP Sync succeeded but failed to convert to local time.");
+                            return false;
+                        }
                     } else {
                         SerialMon.println("Failed to read full NTP packet.");
                     }
@@ -566,36 +587,28 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
     return false;
 }
 
-bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone) {
-    // Attempt 1: Get Network Time directly (NITZ)
+bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec) {
+    float timezone = 0;
+    // Attempt 1: Get Network Time directly (NITZ) - informative only
     SerialMon.println("Attempting to read network time...");
-    modem.getNetworkTime(year, month, day, hour, min, sec, timezone);
+    modem.getNetworkTime(year, month, day, hour, min, sec, &timezone);
 
     // Verbose logging of raw network time
-    SerialMon.printf("Network time raw: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
-                     *year, *month, *day, *hour, *min, *sec, *timezone);
+    SerialMon.printf("Network time raw (modem): %04d-%02d-%02d %02d:%02d:%02d\n",
+                     *year, *month, *day, *hour, *min, *sec);
 
-    // Strict validation: year must be between 2024 and 2035 to be considered valid
-    if (*year >= 2024 && *year <= 2035) {
-        SerialMon.println("Time valid (NITZ/Saved). However, forcing NTP sync for reliability...");
-        // Do NOT return true here. Proceed to force NTP update.
-    } else {
-        SerialMon.printf("Time invalid or not set (Year: %d). Attempting NTP sync...\n", *year);
-    }
-
-    if (manualNtpSync(year, month, day, hour, min, sec, timezone)) {
+    // Force NTP sync regardless of NITZ
+    if (manualNtpSync(year, month, day, hour, min, sec)) {
         // Double-check the year from NTP is reasonable.
         if (*year < 2024 || *year > 2035) {
             SerialMon.printf("NTP Sync succeeded but returned invalid year: %d\n", *year);
             return false;
         }
 
-        // Update Modem Internal Clock
-        char buffer[50];
-        int tz_quarters = (int)(*timezone * 4);
-        sprintf(buffer, "AT+CCLK=\"%02d/%02d/%02d,%02d:%02d:%02d%+03d\"",
-                *year % 100, *month, *day, *hour, *min, *sec, tz_quarters);
-        SerialAT.println(buffer);
+        // Note: We don't necessarily need to update the modem's internal clock (AT+CCLK)
+        // if we are using the ESP32's system clock now.
+        return true;
+    }
         // Wait for OK, but we don't strictly care if it fails
         long start = millis();
         while(millis() - start < 1000) {
