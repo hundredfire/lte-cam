@@ -38,8 +38,98 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec); /
 bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec);
 bool checkInternet();
 
+void powerOnModem() {
+    SerialMon.println("Powering on Modem (Robust Sequence)...");
+
+#ifdef BOARD_POWERON_PIN
+    pinMode(BOARD_POWERON_PIN, OUTPUT);
+    digitalWrite(BOARD_POWERON_PIN, HIGH);
+#endif
+
+    delay(200);
+
+#ifdef MODEM_RESET_PIN
+    // Release reset GPIO hold if it was held during sleep
+    gpio_hold_dis((gpio_num_t)MODEM_RESET_PIN);
+
+    // Pulse Reset Pin (Hardware Reset)
+    SerialMon.println("Pulsing MODEM_RESET_PIN...");
+    pinMode(MODEM_RESET_PIN, OUTPUT);
+    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
+    delay(100);
+    digitalWrite(MODEM_RESET_PIN, MODEM_RESET_LEVEL);
+    delay(2600);
+    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
+#endif
+
+#ifdef MODEM_DTR_PIN
+    pinMode(MODEM_DTR_PIN, OUTPUT);
+    digitalWrite(MODEM_DTR_PIN, LOW);
+#endif
+
+#ifdef MODEM_FLIGHT_PIN
+    pinMode(MODEM_FLIGHT_PIN, OUTPUT);
+    digitalWrite(MODEM_FLIGHT_PIN, HIGH);
+#endif
+
+    SerialMon.println("Pulsing BOARD_PWRKEY_PIN...");
+    pinMode(BOARD_PWRKEY_PIN, OUTPUT);
+    digitalWrite(BOARD_PWRKEY_PIN, LOW);
+    delay(100);
+    digitalWrite(BOARD_PWRKEY_PIN, HIGH);
+    delay(MODEM_POWERON_PULSE_WIDTH_MS);
+    digitalWrite(BOARD_PWRKEY_PIN, LOW);
+
+    delay(3000);
+}
+
+void enterDeepSleep(int hour, int min, int sec) {
+    SerialMon.println("Enter modem power off!");
+    if (modem.poweroff()) {
+        SerialMon.println("Modem power off command sent!");
+    } else {
+        SerialMon.println("Modem power off command failed!");
+    }
+
+    // Wait for modem to actually shutdown
+    delay(5000);
+
+    SerialMon.println("Check modem response...");
+    long start = millis();
+    while (modem.testAT() && millis() - start < 10000) { // Add timeout to avoid infinite loop
+        SerialMon.print(".");
+        delay(500);
+    }
+    SerialMon.println("\nModem power off confirmed (or timed out)!");
+
+    SerialMon.println("Disabling camera power...");
+    setCameraPower(false);
+
+    SerialMon.println("Disabling I2C...");
+    Wire.end();
+
+#ifdef BOARD_POWERON_PIN
+    // Turn on DC boost to power off the modem
+    digitalWrite(BOARD_POWERON_PIN, LOW);
+#endif
+
+#ifdef MODEM_RESET_PIN
+    // Keep it low during the sleep period.
+    pinMode(MODEM_RESET_PIN, OUTPUT);
+    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
+    gpio_hold_en((gpio_num_t)MODEM_RESET_PIN);
+    gpio_deep_sleep_hold_en();
+#endif
+
+    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec) : 3600);
+    SerialMon.printf("Going to deep sleep for %d seconds...\n", sleepSeconds);
+    esp_sleep_enable_timer_wakeup((uint64_t)sleepSeconds * 1000000ULL);
+    delay(200);
+    esp_deep_sleep_start();
+    SerialMon.println("This will never be printed");
+}
+
 void setup() {
-    // === MOVED VARIABLES TO THE TOP TO FIX GOTO SCOPE ERROR ===
     camera_fb_t * fb = nullptr; 
     int year = 0, month = 0, day = 0, hour = -1, min = 0, sec = 0;
     bool gotIP = false; 
@@ -50,20 +140,9 @@ void setup() {
     // Set Timezone rules
     setenv("TZ", TZ_INFO, 1);
     tzset();
-
-#ifdef MODEM_RESET_PIN
-    // Release reset GPIO hold if it was held during sleep
-    gpio_hold_dis((gpio_num_t)MODEM_RESET_PIN);
-#endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
-    SerialMon.println("Firmware Version: TimeSync-Fix-v12");
-
-#ifdef BOARD_POWERON_PIN
-    pinMode(BOARD_POWERON_PIN, OUTPUT);
-    digitalWrite(BOARD_POWERON_PIN, HIGH);
-    delay(500);
-#endif
+    SerialMon.println("Firmware Version: TimeSync-Fix-v13-RobustRetry");
 
 #ifdef BOARD_POWER_SAVE_MODE_PIN
     pinMode(BOARD_POWER_SAVE_MODE_PIN, OUTPUT);
@@ -73,7 +152,8 @@ void setup() {
     SerialMon.println("Powering on Camera PMIC...");
     if (!setCameraPower(true)) {
         SerialMon.println("The camera PMIC failed to start! Going to sleep.");
-        goto sleep_routine;
+        enterDeepSleep(hour, min, sec);
+        return;
     }
 
     camera_config_t config;
@@ -105,118 +185,112 @@ void setup() {
 
     if (esp_camera_init(&config) != ESP_OK) {
         SerialMon.println("Camera init failed! Going to sleep.");
-        goto sleep_routine;
+        enterDeepSleep(hour, min, sec);
+        return;
     }
 
-#ifdef MODEM_RESET_PIN
-    pinMode(MODEM_RESET_PIN, OUTPUT);
-    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
-#endif
-#ifdef MODEM_FLIGHT_PIN
-    pinMode(MODEM_FLIGHT_PIN, OUTPUT);
-    digitalWrite(MODEM_FLIGHT_PIN, HIGH);
-#endif
-#ifdef MODEM_DTR_PIN
-    pinMode(MODEM_DTR_PIN, OUTPUT);
-    digitalWrite(MODEM_DTR_PIN, LOW);
-#endif
-
-    pinMode(BOARD_PWRKEY_PIN, OUTPUT);
-    digitalWrite(BOARD_PWRKEY_PIN, LOW);
-    delay(100);
-    digitalWrite(BOARD_PWRKEY_PIN, HIGH);
-    delay(1000); 
-    digitalWrite(BOARD_PWRKEY_PIN, LOW);
-    
     SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
-    SerialMon.println("Initializing modem...");
-    
-    if (!modem.init()) { 
-        SerialMon.println("Modem init failed!");
-        goto sleep_routine;
-    }
 
-    if (String(GSM_PIN) != "") {
-        if (modem.getSimStatus() != 3) modem.simUnlock(GSM_PIN);
-    }
+    // --- MAIN RETRY LOOP ---
+    int retryCount = 0;
+    const int MAX_RETRIES = 5;
+    bool success = false;
 
-    modem.setNetworkMode(MODEM_NETWORK_AUTO);
+    while (retryCount < MAX_RETRIES) {
+        SerialMon.printf("\n=== Connection Attempt %d/%d ===\n", retryCount + 1, MAX_RETRIES);
 
-    SerialMon.print("Waiting for network...");
-    if (!modem.waitForNetwork(60000L)) goto sleep_routine;
-    SerialMon.println(" OK");
+        powerOnModem();
 
-    // === UPDATED SMART APN LOGIC ===
-    SerialMon.print("Connecting to APN...");
-    modem.gprsConnect(apn, gprsUser, gprsPass); 
-    SerialMon.println(" done.");
-
-    SerialMon.print("Waiting for IP address...");
-    gotIP = false;
-    for (int i = 0; i < 60; i++) {
-        IPAddress local = modem.localIP();
-        if (local[0] != 0 && local[0] != 255) { 
-            SerialMon.print(" OK! IP: ");
-            SerialMon.println(local);
-            gotIP = true;
-            break;
+        SerialMon.println("Initializing modem...");
+        if (!modem.init()) {
+            SerialMon.println("Modem init failed!");
+            retryCount++;
+            continue;
         }
-        delay(1000);
-        SerialMon.print(".");
-    }
-    SerialMon.println();
 
-    if (!gotIP) {
-        SerialMon.println("Network failure: Could not get IP. Going to sleep.");
-        goto sleep_routine;
-    }
+        if (String(GSM_PIN) != "") {
+            if (modem.getSimStatus() != 3) modem.simUnlock(GSM_PIN);
+        }
 
-    // Loop until we get a valid time
-    while (!syncTime(&year, &month, &day, &hour, &min, &sec)) {
-        SerialMon.println("Failed to sync time! Retrying in 30 seconds... (Loop active)");
+        modem.setNetworkMode(MODEM_NETWORK_AUTO);
 
-        // Only ensure Network is attached (CS/PS domain)
-        if (!modem.isNetworkConnected()) {
-            SerialMon.println("Network disconnected. Waiting for network...");
-            if (!modem.waitForNetwork(60000L)) {
-                 SerialMon.println("Network connection failed.");
-                 continue;
+        SerialMon.print("Waiting for network...");
+        if (!modem.waitForNetwork(60000L)) {
+            SerialMon.println(" Network wait failed.");
+            retryCount++;
+            continue;
+        }
+        SerialMon.println(" OK");
+
+        SerialMon.print("Connecting to APN...");
+        if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+            SerialMon.println(" GPRS Connect failed.");
+            retryCount++;
+            continue;
+        }
+        SerialMon.println(" done.");
+
+        SerialMon.print("Waiting for IP address...");
+        gotIP = false;
+        for (int i = 0; i < 60; i++) {
+            IPAddress local = modem.localIP();
+            if (local[0] != 0 && local[0] != 255) {
+                SerialMon.print(" OK! IP: ");
+                SerialMon.println(local);
+                gotIP = true;
+                break;
             }
+            delay(1000);
+            SerialMon.print(".");
+        }
+        SerialMon.println();
+
+        if (!gotIP) {
+            SerialMon.println("Network failure: Could not get IP.");
+            retryCount++;
+            continue;
         }
 
-        // Ensure GPRS context is active IF it reports as disconnected.
-        if (!modem.isGprsConnected()) {
-             SerialMon.println("GPRS disconnected. Attempting to connect...");
-             if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
-                 SerialMon.println("GPRS connection failed.");
-                 continue;
-             }
+        // Attempt Time Sync (Only once per retry loop iteration)
+        if (!syncTime(&year, &month, &day, &hour, &min, &sec)) {
+            SerialMon.println("Failed to sync time!");
+
+            // Optional: If time sync fails, maybe we don't want to fail the whole process if we can get time from system?
+            // But system time is set by syncTime.
+            // If we fail time sync, we might not know when to sleep next.
+            // But let's assume we retry.
+            retryCount++;
+            continue;
         }
 
-        // Check Internet Connectivity - Informational
-        if (!checkInternet()) {
-            SerialMon.println("Internet check failed. Waiting for connectivity to stabilize...");
+        // Re-fetch time after setup to ensure we have the latest adjusted local time
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo)) {
+            year = timeinfo.tm_year + 1900;
+            month = timeinfo.tm_mon + 1;
+            day = timeinfo.tm_mday;
+            hour = timeinfo.tm_hour;
+            min = timeinfo.tm_min;
+            sec = timeinfo.tm_sec;
+            SerialMon.printf("Current Local Time: %04d-%02d-%02d %02d:%02d:%02d\n",
+                            year, month, day, hour, min, sec);
+        } else {
+            SerialMon.println("Failed to obtain local time from system clock.");
+            // If we can't get local time, we might still proceed but sleep calculation will be wrong.
         }
 
-        delay(30000);
+        success = true;
+        break;
     }
 
-    // Re-fetch time after setup to ensure we have the latest adjusted local time
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-        year = timeinfo.tm_year + 1900;
-        month = timeinfo.tm_mon + 1;
-        day = timeinfo.tm_mday;
-        hour = timeinfo.tm_hour;
-        min = timeinfo.tm_min;
-        sec = timeinfo.tm_sec;
-        SerialMon.printf("Current Local Time: %04d-%02d-%02d %02d:%02d:%02d\n",
-                         year, month, day, hour, min, sec);
-    } else {
-        SerialMon.println("Failed to obtain local time from system clock.");
+    if (!success) {
+        SerialMon.println("\nFATAL: Failed to connect after multiple retries.");
+        SerialMon.println("Hard Resetting System (ESP.restart)...");
+        delay(2000);
+        ESP.restart();
     }
 
-// --- START OF WARM-UP LOOP ---
+    // --- START OF WARM-UP LOOP ---
     SerialMon.println("Warming up sensor for auto-exposure...");
     for (int i = 0; i < 5; i++) { 
         fb = esp_camera_fb_get(); 
@@ -235,49 +309,7 @@ void setup() {
         esp_camera_fb_return(fb); 
     }
 
-sleep_routine:
-    SerialMon.println("Enter modem power off!");
-    if (modem.poweroff()) {
-        SerialMon.println("Modem power off command sent!");
-    } else {
-        SerialMon.println("Modem power off command failed!");
-    }
-
-    // Wait for modem to actually shutdown
-    delay(5000);
-
-    SerialMon.println("Check modem response...");
-    while (modem.testAT()) {
-        SerialMon.print(".");
-        delay(500);
-    }
-    SerialMon.println("\nModem is not responding, power off confirmed!");
-
-    SerialMon.println("Disabling camera power...");
-    setCameraPower(false); 
-
-    SerialMon.println("Disabling I2C...");
-    Wire.end();            
-
-#ifdef BOARD_POWERON_PIN
-    // Turn on DC boost to power off the modem
-    digitalWrite(BOARD_POWERON_PIN, LOW); 
-#endif
-
-#ifdef MODEM_RESET_PIN
-    // Keep it low during the sleep period.
-    pinMode(MODEM_RESET_PIN, OUTPUT);
-    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
-    gpio_hold_en((gpio_num_t)MODEM_RESET_PIN);
-    gpio_deep_sleep_hold_en();
-#endif
-
-    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec) : 3600);
-    SerialMon.printf("Going to deep sleep for %d seconds...\n", sleepSeconds);
-    esp_sleep_enable_timer_wakeup((uint64_t)sleepSeconds * 1000000ULL);
-    delay(200);
-    esp_deep_sleep_start();
-    SerialMon.println("This will never be printed");
+    enterDeepSleep(hour, min, sec);
 }
 
 void loop() {}
