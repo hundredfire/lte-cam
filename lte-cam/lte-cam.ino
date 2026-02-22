@@ -21,30 +21,35 @@ const int  DEBUG_SLEEP_SECONDS = 120;
 // Schedule times in HH:mm format
 const char* schedules[] = {"10:00", "15:00"};
 
-// Timezone offset in hours (e.g., 2.0 for GMT+2, -5.0 for GMT-5)
-// Default to 1.0 (e.g., Paris/CET)
-const float TIMEZONE_OFFSET = 1.0;
+// Timezone handling using POSIX standard (Paris: CET/CEST)
+// See https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv for more
+const char* TZ_INFO = "CET-1CEST,M3.5.0,M10.5.0/3";
 // ==========================================
 
 #define SerialMon Serial
 TinyGsm modem(SerialAT);
+TinyGsmClient client(modem);
 
 int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec);
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
 void waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
-bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone);
-bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone);
+bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec); // Removed timezone float
+bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec);
+bool checkInternet();
 
 void setup() {
     // === MOVED VARIABLES TO THE TOP TO FIX GOTO SCOPE ERROR ===
     camera_fb_t * fb = nullptr; 
     int year = 0, month = 0, day = 0, hour = -1, min = 0, sec = 0;
-    float timezone = 0;
     bool gotIP = false; 
 
     SerialMon.begin(115200);
     delay(1000);
+
+    // Set Timezone rules
+    setenv("TZ", TZ_INFO, 1);
+    tzset();
 
 #ifdef MODEM_RESET_PIN
     // Release reset GPIO hold if it was held during sleep
@@ -52,7 +57,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
-    SerialMon.println("Firmware Version: TimeSync-Fix-v3");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v12");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -167,31 +172,49 @@ void setup() {
     }
 
     // Loop until we get a valid time
-    while (!syncTime(&year, &month, &day, &hour, &min, &sec, &timezone)) {
-        SerialMon.println("Failed to sync time! Retrying in 5 seconds... (Loop active)");
-        delay(5000);
+    while (!syncTime(&year, &month, &day, &hour, &min, &sec)) {
+        SerialMon.println("Failed to sync time! Retrying in 30 seconds... (Loop active)");
 
-        // Check network status and reconnect if needed
+        // Only ensure Network is attached (CS/PS domain)
         if (!modem.isNetworkConnected()) {
-            SerialMon.println("Network disconnected. Reconnecting...");
+            SerialMon.println("Network disconnected. Waiting for network...");
             if (!modem.waitForNetwork(60000L)) {
                  SerialMon.println("Network connection failed.");
                  continue;
             }
         }
 
-        // Check GPRS status (bearer)
+        // Ensure GPRS context is active IF it reports as disconnected.
         if (!modem.isGprsConnected()) {
-             SerialMon.println("GPRS disconnected. Reconnecting...");
+             SerialMon.println("GPRS disconnected. Attempting to connect...");
              if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
                  SerialMon.println("GPRS connection failed.");
                  continue;
              }
         }
+
+        // Check Internet Connectivity - Informational
+        if (!checkInternet()) {
+            SerialMon.println("Internet check failed. Waiting for connectivity to stabilize...");
+        }
+
+        delay(30000);
     }
 
-    SerialMon.printf("Current Time: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
-                     year, month, day, hour, min, sec, timezone);
+    // Re-fetch time after setup to ensure we have the latest adjusted local time
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+        year = timeinfo.tm_year + 1900;
+        month = timeinfo.tm_mon + 1;
+        day = timeinfo.tm_mday;
+        hour = timeinfo.tm_hour;
+        min = timeinfo.tm_min;
+        sec = timeinfo.tm_sec;
+        SerialMon.printf("Current Local Time: %04d-%02d-%02d %02d:%02d:%02d\n",
+                         year, month, day, hour, min, sec);
+    } else {
+        SerialMon.println("Failed to obtain local time from system clock.");
+    }
 
 // --- START OF WARM-UP LOOP ---
     SerialMon.println("Warming up sensor for auto-exposure...");
@@ -230,7 +253,10 @@ sleep_routine:
     }
     SerialMon.println("\nModem is not responding, power off confirmed!");
 
+    SerialMon.println("Disabling camera power...");
     setCameraPower(false); 
+
+    SerialMon.println("Disabling I2C...");
     Wire.end();            
 
 #ifdef BOARD_POWERON_PIN
@@ -255,6 +281,18 @@ sleep_routine:
 }
 
 void loop() {}
+
+bool checkInternet() {
+    SerialMon.print("Checking Internet connectivity (TCP -> google.com:80)... ");
+    if (client.connect("google.com", 80)) {
+        SerialMon.println("OK");
+        client.stop();
+        return true;
+    } else {
+        SerialMon.println("Failed");
+        return false;
+    }
+}
 
 bool setCameraPower(bool enable) {
     static bool started = false;
@@ -404,203 +442,188 @@ void waitModemResponse(int timeoutMs, String expectedToken) {
     }
 }
 
-bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone) {
-    SerialMon.println("Attempting Manual UDP NTP Sync...");
+bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec) {
+    SerialMon.println("Attempting Modem Native NTP Sync (AT+CNTP)...");
 
     // Server list to try
     const char* ntpServers[] = {"pool.ntp.org", "time.google.com", "time.nist.gov"};
     int numServers = 3;
 
-    // Ensure manual receive mode
-    SerialAT.println("AT+CIPRXGET=1");
-    waitModemResponse(1000, "OK");
-
     for (int i = 0; i < numServers; i++) {
-        SerialMon.print("Connecting to UDP: ");
+        SerialMon.print("Trying NTP Server: ");
         SerialMon.println(ntpServers[i]);
 
-        // Close any previous socket 0 just in case
-        SerialAT.println("AT+CIPCLOSE=0");
-        waitModemResponse(500);
-
-        SerialAT.print("AT+CIPOPEN=0,\"UDP\",\"");
+        // 1. Configure NTP Server (0 offset, we handle TZ locally)
+        // Command: AT+CNTP=<server>,<timezone_offset_quarter_hours>
+        SerialAT.print("AT+CNTP=\"");
         SerialAT.print(ntpServers[i]);
-        SerialAT.println("\",123");
+        SerialAT.println("\",0");
+        waitModemResponse(2000, "OK");
 
-        bool connected = false;
+        // 2. Start NTP Sync
+        // Command: AT+CNTP
+        SerialAT.println("AT+CNTP");
+
+        // Wait for URC response: +CNTP: <err>,<ip/str>,<time>
+        // Timeout can be up to 60s
         long start = millis();
-        while(millis() - start < 10000) {
+        bool success = false;
+        String response = "";
+
+        while(millis() - start < 60000) {
             if (SerialAT.available()) {
                 String line = SerialAT.readStringUntil('\n');
                 line.trim();
-                if (line.length() > 0) SerialMon.println("  [UDP] " + line);
-
-                if (line.indexOf("+CIPOPEN: 0,0") != -1) {
-                    connected = true;
-                    break;
-                }
-                if (line.indexOf("ERROR") != -1) break;
-            }
-        }
-
-        if (!connected) {
-            SerialMon.println("UDP Connection failed. Trying next server...");
-            continue;
-        }
-
-        // Send NTP Request
-        byte ntpPacket[48];
-        memset(ntpPacket, 0, 48);
-        ntpPacket[0] = 0x1B; // LI=0, VN=3, Mode=3 (Client)
-
-        SerialAT.print("AT+CIPSEND=0,48");
-        SerialAT.println();
-
-        // Wait for prompt >
-        start = millis();
-        bool prompt = false;
-        while(millis() - start < 3000) {
-            if (SerialAT.available()) {
-                char c = SerialAT.read();
-                if (c == '>') {
-                    prompt = true;
-                    break;
-                }
-            }
-        }
-
-        if (prompt) {
-            SerialAT.write(ntpPacket, 48);
-
-            // Wait for data
-            start = millis();
-            bool dataReceived = false;
-            while(millis() - start < 5000) {
-                 if (SerialAT.available()) {
-                    String line = SerialAT.readStringUntil('\n');
-                    line.trim();
-                    if (line.length() > 0) SerialMon.println("  [UDP] " + line);
-
-                    if (line.indexOf("+CIPRXGET: 1") != -1) {
-                        dataReceived = true;
+                if (line.length() > 0) {
+                    SerialMon.println("  [NTP] " + line);
+                    // Expected: +CNTP: 0,"2024/05/20,12:34:56" (Format may vary slightly by firmware)
+                    // Error codes: 1=Network error, 61=DNS error, etc.
+                    if (line.startsWith("+CNTP: 0")) { // 0 = Success
+                        response = line;
+                        success = true;
+                        break;
+                    } else if (line.startsWith("+CNTP:")) {
+                        // Failure code received
                         break;
                     }
-                 }
-            }
-
-            if (dataReceived) {
-                SerialAT.println("AT+CIPRXGET=2,0,48");
-
-                // We need to parse this manually and robustly.
-                // Read until we find the header line: +CIPRXGET: 2,0,48,0
-                start = millis();
-                bool headerFound = false;
-                while(millis() - start < 2000) {
-                    if (SerialAT.available()) {
-                        String line = SerialAT.readStringUntil('\n');
-                        if (line.indexOf("+CIPRXGET: 2,") != -1) {
-                            headerFound = true;
-                            break;
-                        }
-                    }
                 }
-
-                if (headerFound) {
-                    // Now read 48 bytes
-                    byte buffer[48];
-                    int bytesRead = 0;
-                    start = millis();
-                    while (bytesRead < 48 && millis() - start < 3000) {
-                        if (SerialAT.available()) {
-                            buffer[bytesRead++] = SerialAT.read();
-                        }
-                    }
-
-                    if (bytesRead == 48) {
-                        // Success!
-                        SerialAT.println("AT+CIPCLOSE=0");
-                        waitModemResponse(1000);
-
-                        // Parse timestamp
-                        unsigned long highWord = (unsigned long)buffer[40] << 8 | buffer[41];
-                        unsigned long lowWord = (unsigned long)buffer[42] << 8 | buffer[43];
-                        unsigned long secsSince1900 = highWord << 16 | lowWord;
-                        unsigned long seventyYears = 2208988800UL;
-                        unsigned long epoch = secsSince1900 - seventyYears;
-
-                        // Apply timezone
-                        epoch += (long)(TIMEZONE_OFFSET * 3600);
-
-                        struct tm *ptm = gmtime((time_t*)&epoch);
-
-                        *year = ptm->tm_year + 1900;
-                        *month = ptm->tm_mon + 1;
-                        *day = ptm->tm_mday;
-                        *hour = ptm->tm_hour;
-                        *min = ptm->tm_min;
-                        *sec = ptm->tm_sec;
-                        *timezone = TIMEZONE_OFFSET;
-
-                        SerialMon.println("NTP Sync Successful!");
-                        return true;
-                    } else {
-                        SerialMon.println("Failed to read full NTP packet.");
-                    }
-                } else {
-                     SerialMon.println("Failed to find data header.");
-                }
-            } else {
-                 SerialMon.println("No data received.");
             }
-        } else {
-             SerialMon.println("No Prompt received.");
         }
 
-        SerialAT.println("AT+CIPCLOSE=0");
-        waitModemResponse(1000);
+        if (success) {
+            String timeStr = "";
+
+            // Check if the response contains the time string directly: +CNTP: 0,"yy/MM/dd,HH:mm:ss"
+            int firstQuote = response.indexOf('"');
+            int lastQuote = response.lastIndexOf('"');
+
+            if (firstQuote != -1 && lastQuote != -1) {
+                timeStr = response.substring(firstQuote + 1, lastQuote);
+            } else {
+                // Some firmware versions only return "+CNTP: 0" on success and update the internal clock silently.
+                // In this case, we need to read the time from AT+CCLK?
+                SerialMon.println("NTP Success reported (0), but no time string. Checking AT+CCLK...");
+
+                // Wait a bit for the modem to update its internal clock if needed
+                delay(2000);
+
+                SerialAT.println("AT+CCLK?");
+                long cclkStart = millis();
+                while(millis() - cclkStart < 2000) {
+                     if (SerialAT.available()) {
+                        String line = SerialAT.readStringUntil('\n');
+                        line.trim();
+                        if (line.startsWith("+CCLK: \"")) {
+                            int q1 = line.indexOf('"');
+                            int q2 = line.lastIndexOf('"');
+                            if (q1 != -1 && q2 != -1) {
+                                timeStr = line.substring(q1 + 1, q2);
+                                // CCLK format might include timezone: "yy/MM/dd,HH:mm:ss+zz"
+                                // We need to strip the timezone part if present for parsing
+                                int plusSign = timeStr.indexOf('+');
+                                int minusSign = timeStr.lastIndexOf('-'); // Watch out for date separators vs timezone
+
+                                // Timezone part is usually at the end, e.g. +08 or -05.
+                                // The date uses '/', time uses ':'.
+                                if (plusSign > 10) {
+                                    timeStr = timeStr.substring(0, plusSign);
+                                } else if (minusSign > 13) { // Date uses '-', wait A7670 uses '/' usually.
+                                     timeStr = timeStr.substring(0, minusSign);
+                                }
+                                break;
+                            }
+                        }
+                     }
+                }
+            }
+
+            if (timeStr.length() > 0) {
+                // Expected format: "24/05/20,12:34:56" (Year is 2-digit)
+                // Or "2024/05/20,12:34:56" (Year is 4-digit) - Check first slash
+
+                int firstSlash = timeStr.indexOf('/');
+                if (firstSlash != -1) {
+                    String yearStr = timeStr.substring(0, firstSlash);
+                    *year = yearStr.toInt();
+                    // Fix 2-digit year
+                    if (*year < 100) *year += 2000;
+
+                    // Parse the rest manually
+                    int secondSlash = timeStr.indexOf('/', firstSlash + 1);
+                    int comma = timeStr.indexOf(',');
+                    int firstColon = timeStr.indexOf(':');
+                    int secondColon = timeStr.indexOf(':', firstColon + 1);
+
+                    if (secondSlash != -1 && comma != -1 && firstColon != -1 && secondColon != -1) {
+                        *month = timeStr.substring(firstSlash + 1, secondSlash).toInt();
+                        *day = timeStr.substring(secondSlash + 1, comma).toInt();
+                        *hour = timeStr.substring(comma + 1, firstColon).toInt();
+                        *min = timeStr.substring(firstColon + 1, secondColon).toInt();
+                        *sec = timeStr.substring(secondColon + 1).toInt();
+
+                        // Construct UTC time struct
+                        struct tm tm_utc;
+                        tm_utc.tm_year = *year - 1900;
+                        tm_utc.tm_mon = *month - 1;
+                        tm_utc.tm_mday = *day;
+                        tm_utc.tm_hour = *hour;
+                        tm_utc.tm_min = *min;
+                        tm_utc.tm_sec = *sec;
+                        tm_utc.tm_isdst = 0; // UTC has no DST
+
+                        // FIX: Temporarily switch to UTC to interpret tm_utc correctly
+                        String oldTz = getenv("TZ");
+                        setenv("TZ", "UTC0", 1);
+                        tzset();
+
+                        time_t t_utc = mktime(&tm_utc);
+
+                        // Restore User Timezone
+                        setenv("TZ", oldTz.c_str(), 1);
+                        tzset();
+
+                        // Set system time (UTC)
+                        struct timeval tv;
+                        tv.tv_sec = t_utc;
+                        tv.tv_usec = 0;
+                        settimeofday(&tv, NULL);
+
+                        SerialMon.println("Native NTP Sync Successful & System Time Set!");
+                        return true;
+                    }
+                }
+            }
+            SerialMon.println("Failed to parse NTP/CCLK response string: " + timeStr);
+        } else {
+            SerialMon.println("NTP Sync failed (Timeout or Error code).");
+        }
+
+        delay(2000); // Wait before trying next server
     }
 
     return false;
 }
 
-bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, float *timezone) {
-    // Attempt 1: Get Network Time directly (NITZ)
+bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec) {
+    float timezone = 0;
+    // Attempt 1: Get Network Time directly (NITZ) - informative only
     SerialMon.println("Attempting to read network time...");
-    modem.getNetworkTime(year, month, day, hour, min, sec, timezone);
+    modem.getNetworkTime(year, month, day, hour, min, sec, &timezone);
 
     // Verbose logging of raw network time
-    SerialMon.printf("Network time raw: %04d-%02d-%02d %02d:%02d:%02d (Timezone: %.1f)\n",
-                     *year, *month, *day, *hour, *min, *sec, *timezone);
+    SerialMon.printf("Network time raw (modem): %04d-%02d-%02d %02d:%02d:%02d\n",
+                     *year, *month, *day, *hour, *min, *sec);
 
-    // Strict validation: year must be between 2024 and 2035 to be considered valid
-    if (*year >= 2024 && *year <= 2035) {
-        SerialMon.println("Time valid (NITZ/Saved).");
-        return true;
-    }
-
-    SerialMon.printf("Time invalid or not set (Year: %d). Attempting NTP sync...\n", *year);
-
-    if (manualNtpSync(year, month, day, hour, min, sec, timezone)) {
+    // Force NTP sync regardless of NITZ
+    if (manualNtpSync(year, month, day, hour, min, sec)) {
         // Double-check the year from NTP is reasonable.
         if (*year < 2024 || *year > 2035) {
             SerialMon.printf("NTP Sync succeeded but returned invalid year: %d\n", *year);
             return false;
         }
 
-        // Update Modem Internal Clock
-        char buffer[50];
-        int tz_quarters = (int)(*timezone * 4);
-        sprintf(buffer, "AT+CCLK=\"%02d/%02d/%02d,%02d:%02d:%02d%+03d\"",
-                *year % 100, *month, *day, *hour, *min, *sec, tz_quarters);
-        SerialAT.println(buffer);
-        // Wait for OK, but we don't strictly care if it fails
-        long start = millis();
-        while(millis() - start < 1000) {
-             if (SerialAT.available()) {
-                String line = SerialAT.readStringUntil('\n');
-                if (line.indexOf("OK") != -1) break;
-             }
-        }
+        // Note: We don't necessarily need to update the modem's internal clock (AT+CCLK)
+        // if we are using the ESP32's system clock now.
         return true;
     }
 
