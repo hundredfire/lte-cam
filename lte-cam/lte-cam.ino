@@ -503,6 +503,14 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
         SerialMon.print("Trying NTP Server: ");
         SerialMon.println(ntpServers[i]);
 
+        // Ensure NITZ doesn't overwrite our time
+        SerialAT.println("AT+CTZU=0");
+        waitModemResponse(2000, "OK");
+
+        // Ensure correct PDP context for NTP
+        SerialAT.println("AT+CNTPCID=1");
+        waitModemResponse(2000, "OK");
+
         // 1. Configure NTP Server (0 offset, we handle TZ locally)
         // Command: AT+CNTP=<server>,<timezone_offset_quarter_hours>
         SerialAT.print("AT+CNTP=\"");
@@ -564,6 +572,7 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                         String line = SerialAT.readStringUntil('\n');
                         line.trim();
                         if (line.startsWith("+CCLK: \"")) {
+                            SerialMon.println("  [CCLK Raw] " + line);
                             int q1 = line.indexOf('"');
                             int q2 = line.lastIndexOf('"');
                             if (q1 != -1 && q2 != -1) {
