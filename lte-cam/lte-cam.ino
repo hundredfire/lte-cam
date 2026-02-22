@@ -9,6 +9,7 @@
 #include "esp_camera.h"
 #include <driver/gpio.h>
 #include <TinyGsmClient.h>
+#include <esp32-hal-adc.h>
 
 // Load our private credentials
 #include "secrets.h"
@@ -32,11 +33,13 @@ TinyGsmClient client(modem);
 
 int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec);
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
-void waitModemResponse(int timeoutMs, String expectedToken = "OK");
+bool waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
 bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec); // Removed timezone float
 bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec);
 bool checkInternet();
+uint32_t readBatteryVoltage();
+void sendTelegramMessage(String text);
 
 void powerOnModem() {
     SerialMon.println("Powering on Modem (Robust Sequence)...");
@@ -143,6 +146,13 @@ void setup() {
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
     SerialMon.println("Firmware Version: TimeSync-Fix-v13-RobustRetry");
+
+    // Initialize ADC for Battery Reading
+    analogSetAttenuation(ADC_11db);
+    analogReadResolution(12);
+#if CONFIG_IDF_TARGET_ESP32
+    analogSetWidth(12);
+#endif
 
 #ifdef BOARD_POWER_SAVE_MODE_PIN
     pinMode(BOARD_POWER_SAVE_MODE_PIN, OUTPUT);
@@ -307,6 +317,13 @@ void setup() {
         SerialMon.printf("Photo taken! Size: %zu bytes. Uploading to Telegram...\n", fb->len);
         sendPhotoViaBuiltInHTTP(fb); 
         esp_camera_fb_return(fb); 
+
+        // Send Battery Status
+        uint32_t vol = readBatteryVoltage();
+        if (vol > 0) {
+             String msg = "Battery Voltage: " + String(vol) + " mV";
+             sendTelegramMessage(msg);
+        }
     }
 
     enterDeepSleep(hour, min, sec);
@@ -462,16 +479,17 @@ void sendPhotoViaBuiltInHTTP(camera_fb_t * fb) {
     waitModemResponse(2000);
 }
 
-void waitModemResponse(int timeoutMs, String expectedToken) {
+bool waitModemResponse(int timeoutMs, String expectedToken) {
     long start = millis();
     while(millis() - start < timeoutMs) {
         if(SerialAT.available()) {
             String res = SerialAT.readStringUntil('\n');
             res.trim();
             if(res.length() > 0) SerialMon.println("  [Modem] " + res);
-            if(res.indexOf(expectedToken) != -1) break;
+            if(res.indexOf(expectedToken) != -1) return true;
         }
     }
+    return false;
 }
 
 bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec) {
@@ -484,6 +502,14 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
     for (int i = 0; i < numServers; i++) {
         SerialMon.print("Trying NTP Server: ");
         SerialMon.println(ntpServers[i]);
+
+        // Ensure NITZ doesn't overwrite our time
+        SerialAT.println("AT+CTZU=0");
+        waitModemResponse(2000, "OK");
+
+        // Ensure correct PDP context for NTP
+        SerialAT.println("AT+CNTPCID=1");
+        waitModemResponse(2000, "OK");
 
         // 1. Configure NTP Server (0 offset, we handle TZ locally)
         // Command: AT+CNTP=<server>,<timezone_offset_quarter_hours>
@@ -546,6 +572,7 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                         String line = SerialAT.readStringUntil('\n');
                         line.trim();
                         if (line.startsWith("+CCLK: \"")) {
+                            SerialMon.println("  [CCLK Raw] " + line);
                             int q1 = line.indexOf('"');
                             int q2 = line.lastIndexOf('"');
                             if (q1 != -1 && q2 != -1) {
@@ -693,4 +720,95 @@ int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int curr
     }
 
     return minDiff;
+}
+
+uint32_t readBatteryVoltage() {
+    uint32_t v = 0;
+#ifdef BOARD_BAT_ADC_PIN
+    v = analogReadMilliVolts(BOARD_BAT_ADC_PIN) * 2;
+    SerialMon.printf("Battery Voltage: %u mV\n", v);
+#endif
+    return v;
+}
+
+void sendTelegramMessage(String text) {
+    SerialMon.println("Sending Telegram Message: " + text);
+
+    // Ensure HTTP is clean before starting
+    SerialAT.println("AT+HTTPTERM");
+    waitModemResponse(2000);
+    delay(1000);
+
+    SerialAT.println("AT+HTTPINIT");
+    if (!waitModemResponse(2000)) {
+        SerialMon.println("HTTPINIT failed. Retrying...");
+        delay(1000);
+        SerialAT.println("AT+HTTPTERM");
+        waitModemResponse(2000);
+        delay(1000);
+        SerialAT.println("AT+HTTPINIT");
+        if (!waitModemResponse(2000)) {
+            SerialMon.println("HTTPINIT failed again. Aborting message.");
+            return;
+        }
+    }
+
+    String url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
+    SerialAT.println("AT+HTTPPARA=\"URL\",\"" + url + "\"");
+    waitModemResponse(2000);
+
+    SerialAT.println("AT+HTTPPARA=\"CONTENT\",\"application/json\"");
+    waitModemResponse(2000);
+
+    // Escape characters for JSON if needed
+    String escapedText = text;
+    escapedText.replace("\\", "\\\\");
+    escapedText.replace("\"", "\\\"");
+    escapedText.replace("\n", "\\n");
+
+    String payload = "{\"chat_id\":\"" + chatId + "\", \"text\":\"" + escapedText + "\"}";
+
+    SerialAT.print("AT+HTTPDATA=");
+    SerialAT.print(payload.length());
+    SerialAT.println(",10000");
+
+    long start = millis();
+    bool readyToSend = false;
+    while (millis() - start < 10000) {
+        if (SerialAT.available()) {
+            String line = SerialAT.readStringUntil('\n');
+            line.trim();
+            if (line.indexOf("DOWNLOAD") != -1) {
+                readyToSend = true;
+                break;
+            }
+        }
+    }
+
+    if (readyToSend) {
+        SerialAT.print(payload);
+        waitModemResponse(10000, "OK");
+
+        SerialAT.println("AT+HTTPACTION=1");
+
+        start = millis();
+        while (millis() - start < 20000) {
+            if (SerialAT.available()) {
+                String res = SerialAT.readStringUntil('\n');
+                SerialMon.print(res);
+                if (res.indexOf("+HTTPACTION: 1,200") != -1) {
+                    SerialMon.println("\nMessage sent successfully.");
+                    break;
+                } else if (res.indexOf("+HTTPACTION: 1,") != -1) {
+                    SerialMon.println("\nMessage send failed: " + res);
+                    break;
+                }
+            }
+        }
+    } else {
+        SerialMon.println("Failed to get DOWNLOAD prompt for message.");
+    }
+
+    SerialAT.println("AT+HTTPTERM");
+    waitModemResponse(2000);
 }
