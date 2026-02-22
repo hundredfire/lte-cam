@@ -57,7 +57,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
-    SerialMon.println("Firmware Version: TimeSync-Fix-v9");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v11");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -488,11 +488,50 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
         }
 
         if (success) {
-            // Parse the time string: +CNTP: 0,"yy/MM/dd,HH:mm:ss"
+            String timeStr = "";
+
+            // Check if the response contains the time string directly: +CNTP: 0,"yy/MM/dd,HH:mm:ss"
             int firstQuote = response.indexOf('"');
             int lastQuote = response.lastIndexOf('"');
+
             if (firstQuote != -1 && lastQuote != -1) {
-                String timeStr = response.substring(firstQuote + 1, lastQuote);
+                timeStr = response.substring(firstQuote + 1, lastQuote);
+            } else {
+                // Some firmware versions only return "+CNTP: 0" on success and update the internal clock silently.
+                // In this case, we need to read the time from AT+CCLK?
+                SerialMon.println("NTP Success reported (0), but no time string. Checking AT+CCLK...");
+
+                SerialAT.println("AT+CCLK?");
+                long cclkStart = millis();
+                while(millis() - cclkStart < 2000) {
+                     if (SerialAT.available()) {
+                        String line = SerialAT.readStringUntil('\n');
+                        line.trim();
+                        if (line.startsWith("+CCLK: \"")) {
+                            int q1 = line.indexOf('"');
+                            int q2 = line.lastIndexOf('"');
+                            if (q1 != -1 && q2 != -1) {
+                                timeStr = line.substring(q1 + 1, q2);
+                                // CCLK format might include timezone: "yy/MM/dd,HH:mm:ss+zz"
+                                // We need to strip the timezone part if present for parsing
+                                int plusSign = timeStr.indexOf('+');
+                                int minusSign = timeStr.lastIndexOf('-'); // Watch out for date separators vs timezone
+
+                                // Timezone part is usually at the end, e.g. +08 or -05.
+                                // The date uses '/', time uses ':'.
+                                if (plusSign > 10) {
+                                    timeStr = timeStr.substring(0, plusSign);
+                                } else if (minusSign > 13) { // Date uses '-', wait A7670 uses '/' usually.
+                                     timeStr = timeStr.substring(0, minusSign);
+                                }
+                                break;
+                            }
+                        }
+                     }
+                }
+            }
+
+            if (timeStr.length() > 0) {
                 // Expected format: "24/05/20,12:34:56" (Year is 2-digit)
                 // Or "2024/05/20,12:34:56" (Year is 4-digit) - Check first slash
 
@@ -526,7 +565,16 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                         tm_utc.tm_sec = *sec;
                         tm_utc.tm_isdst = 0; // UTC has no DST
 
+                        // FIX: Temporarily switch to UTC to interpret tm_utc correctly
+                        String oldTz = getenv("TZ");
+                        setenv("TZ", "UTC0", 1);
+                        tzset();
+
                         time_t t_utc = mktime(&tm_utc);
+
+                        // Restore User Timezone
+                        setenv("TZ", oldTz.c_str(), 1);
+                        tzset();
 
                         // Set system time (UTC)
                         struct timeval tv;
@@ -539,7 +587,7 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                     }
                 }
             }
-            SerialMon.println("Failed to parse NTP response string.");
+            SerialMon.println("Failed to parse NTP/CCLK response string: " + timeStr);
         } else {
             SerialMon.println("NTP Sync failed (Timeout or Error code).");
         }
