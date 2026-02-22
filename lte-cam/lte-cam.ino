@@ -57,7 +57,7 @@ void setup() {
 #endif
     
     SerialMon.println("\n--- Telegram LTE Camera Starting [BUILT-IN HTTP MODE] ---");
-    SerialMon.println("Firmware Version: TimeSync-Fix-v11");
+    SerialMon.println("Firmware Version: TimeSync-Fix-v12");
 
 #ifdef BOARD_POWERON_PIN
     pinMode(BOARD_POWERON_PIN, OUTPUT);
@@ -253,7 +253,10 @@ sleep_routine:
     }
     SerialMon.println("\nModem is not responding, power off confirmed!");
 
+    SerialMon.println("Disabling camera power...");
     setCameraPower(false); 
+
+    SerialMon.println("Disabling I2C...");
     Wire.end();            
 
 #ifdef BOARD_POWERON_PIN
@@ -500,6 +503,9 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                 // Some firmware versions only return "+CNTP: 0" on success and update the internal clock silently.
                 // In this case, we need to read the time from AT+CCLK?
                 SerialMon.println("NTP Success reported (0), but no time string. Checking AT+CCLK...");
+
+                // Wait a bit for the modem to update its internal clock if needed
+                delay(2000);
 
                 SerialAT.println("AT+CCLK?");
                 long cclkStart = millis();
