@@ -49,7 +49,7 @@ void powerOnModem() {
     digitalWrite(BOARD_POWERON_PIN, HIGH);
 #endif
 
-    delay(200);
+    delay(2000);
 
 #ifdef MODEM_RESET_PIN
     // Release reset GPIO hold if it was held during sleep
@@ -83,7 +83,7 @@ void powerOnModem() {
     delay(MODEM_POWERON_PULSE_WIDTH_MS);
     digitalWrite(BOARD_PWRKEY_PIN, LOW);
 
-    delay(3000);
+    delay(10000);
 }
 
 void enterDeepSleep(int hour, int min, int sec) {
@@ -95,7 +95,7 @@ void enterDeepSleep(int hour, int min, int sec) {
     }
 
     // Wait for modem to actually shutdown
-    delay(5000);
+    delay(10000);
 
     SerialMon.println("Check modem response...");
     long start = millis();
