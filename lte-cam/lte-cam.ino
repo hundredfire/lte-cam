@@ -87,23 +87,39 @@ void powerOnModem() {
 }
 
 void enterDeepSleep(int hour, int min, int sec) {
-    SerialMon.println("Enter modem power off!");
-    if (modem.poweroff()) {
-        SerialMon.println("Modem power off command sent!");
-    } else {
-        SerialMon.println("Modem power off command failed!");
+    SerialMon.println("Preparing for Deep Sleep (SMS Wakeup Mode)...");
+
+    // Enable Sleep Mode on Modem
+    // AT+CSCLK=1 : Enable sleep mode. Modem sleeps when DTR is high.
+    SerialAT.println("AT+CSCLK=1");
+    if (waitModemResponse(2000)) {
+        SerialMon.println("Modem sleep mode enabled (CSCLK=1).");
     }
 
-    // Wait for modem to actually shutdown
-    delay(10000);
+#ifdef MODEM_DTR_PIN
+    // Pull DTR HIGH to let modem sleep
+    pinMode(MODEM_DTR_PIN, OUTPUT);
+    digitalWrite(MODEM_DTR_PIN, HIGH);
+    gpio_hold_en((gpio_num_t)MODEM_DTR_PIN); // Hold DTR High during sleep
+    gpio_deep_sleep_hold_en();
+#endif
 
-    SerialMon.println("Check modem response...");
-    long start = millis();
-    while (modem.testAT() && millis() - start < 10000) { // Add timeout to avoid infinite loop
-        SerialMon.print(".");
-        delay(500);
-    }
-    SerialMon.println("\nModem power off confirmed (or timed out)!");
+#ifdef BOARD_POWERON_PIN
+    // Ensure Modem Power remains ON
+    pinMode(BOARD_POWERON_PIN, OUTPUT);
+    digitalWrite(BOARD_POWERON_PIN, HIGH);
+    gpio_hold_en((gpio_num_t)BOARD_POWERON_PIN);
+    gpio_deep_sleep_hold_en();
+#endif
+
+    // Ensure RI (Ring Indicator) is configured to wake us up
+    // MODEM_RING_PIN should be connected to an RTC GPIO
+#ifdef MODEM_RING_PIN
+    pinMode(MODEM_RING_PIN, INPUT_PULLUP);
+    // Configure wakeup on LOW (RI goes low on incoming SMS/Call)
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)MODEM_RING_PIN, 0);
+    SerialMon.printf("Configured wakeup on PIN %d (RI)\n", MODEM_RING_PIN);
+#endif
 
     SerialMon.println("Disabling camera power...");
     setCameraPower(false);
@@ -111,13 +127,8 @@ void enterDeepSleep(int hour, int min, int sec) {
     SerialMon.println("Disabling I2C...");
     Wire.end();
 
-#ifdef BOARD_POWERON_PIN
-    // Turn on DC boost to power off the modem
-    digitalWrite(BOARD_POWERON_PIN, LOW);
-#endif
-
 #ifdef MODEM_RESET_PIN
-    // Keep it low during the sleep period.
+    // Keep it low (inactive) during the sleep period to prevent accidental resets
     pinMode(MODEM_RESET_PIN, OUTPUT);
     digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
     gpio_hold_en((gpio_num_t)MODEM_RESET_PIN);
@@ -126,7 +137,10 @@ void enterDeepSleep(int hour, int min, int sec) {
 
     int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec) : 3600);
     SerialMon.printf("Going to deep sleep for %d seconds...\n", sleepSeconds);
+
+    // Enable Timer Wakeup (for schedule)
     esp_sleep_enable_timer_wakeup((uint64_t)sleepSeconds * 1000000ULL);
+
     delay(200);
     esp_deep_sleep_start();
     SerialMon.println("This will never be printed");
@@ -205,11 +219,48 @@ void setup() {
     int retryCount = 0;
     const int MAX_RETRIES = 5;
     bool success = false;
+    bool skipPowerOn = false;
+
+    // Check wakeup reason and try to reuse modem state if possible
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 || wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+         SerialMon.println("Woke up from Sleep. Checking modem status...");
+
+#ifdef MODEM_DTR_PIN
+         gpio_hold_dis((gpio_num_t)MODEM_DTR_PIN);
+         pinMode(MODEM_DTR_PIN, OUTPUT);
+         digitalWrite(MODEM_DTR_PIN, LOW); // Wake modem from sleep
+         delay(100);
+#endif
+#ifdef BOARD_POWERON_PIN
+         gpio_hold_dis((gpio_num_t)BOARD_POWERON_PIN);
+         pinMode(BOARD_POWERON_PIN, OUTPUT);
+         digitalWrite(BOARD_POWERON_PIN, HIGH);
+#endif
+#ifdef MODEM_RESET_PIN
+         gpio_hold_dis((gpio_num_t)MODEM_RESET_PIN);
+#endif
+
+         // Attempt to talk to modem
+         SerialAT.println("AT");
+         delay(100);
+         if (modem.testAT()) {
+             SerialMon.println("Modem is ALIVE! Skipping power-on sequence.");
+             skipPowerOn = true;
+         } else {
+             SerialMon.println("Modem not responding. Will power on normally.");
+         }
+    }
 
     while (retryCount < MAX_RETRIES) {
         SerialMon.printf("\n=== Connection Attempt %d/%d ===\n", retryCount + 1, MAX_RETRIES);
 
-        powerOnModem();
+        if (!skipPowerOn) {
+            powerOnModem();
+        } else {
+             // If we skipped powerOn, ensure we only try once; if it fails, next loop will powerOn
+             skipPowerOn = false;
+        }
 
         SerialMon.println("Initializing modem...");
         if (!modem.init()) {
@@ -217,6 +268,16 @@ void setup() {
             retryCount++;
             continue;
         }
+
+        // Configure RI pin for SMS notification behavior
+        SerialAT.println("AT+CFGRI=1"); // RI pin will go low when URC received
+        waitModemResponse(1000);
+        SerialAT.println("AT+CNMI=2,1"); // New message indication
+        waitModemResponse(1000);
+
+        // Clean up SMS storage to ensure we can receive new triggers
+        SerialAT.println("AT+CMGD=1,4");
+        waitModemResponse(2000);
 
         if (String(GSM_PIN) != "") {
             if (modem.getSimStatus() != 3) modem.simUnlock(GSM_PIN);
