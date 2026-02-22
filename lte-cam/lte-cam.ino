@@ -20,7 +20,7 @@
 const bool DEBUG_MODE = false;           
 const int  DEBUG_SLEEP_SECONDS = 120;   
 // Schedule times in HH:mm format
-const char* schedules[] = {"10:00", "15:00"};
+const char* schedules[] = {"10:00", "17:00"};
 
 // Timezone handling using POSIX standard (Paris: CET/CEST)
 // See https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv for more
