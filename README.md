@@ -4,42 +4,29 @@ LTE-CAM is an open-source project for capturing photos at scheduled times using 
 
 ## Features
 
-- Automates camera captures at user-defined times (e.g., 10 AM and 3 PM by default).
+- Automates camera captures at user-defined times (e.g., 10 AM and 5 PM by default).
 - Sends captured photos via Telegram bot to your personal account or a group.
-- Secure storage and flexible configuration for your Telegram credentials and LTE details via a secrets.h file.
+- Sends battery voltage reading for battery monitoring.
 
 ## Getting Started
 
 ### Hardware Requirements
 
-- A supported microcontroller (e.g., ESP32, ESP8266, or equivalent) with camera support and LTE connectivity (we only tested on ESP32-S3).*
-- Supported camera module (e.g., OV2640 for ESP32-CAM boards).
-- SIM card with data plan (if using LTE module).
+- A supported microcontroller (e.g., ESP32, ESP8266, or equivalent) with camera support and LTE connectivity (we only tested the lilygo ESP32-S# A7670E).*
+- Supported camera module (e.g., OV2640).
+- SIM card with data plan.
 
 *The required hardware may differ based on the specific code; refer to your board/module's documentation for compatibility.
 
 ### Software Prerequisites
 
 - PlatformIO or Arduino IDE installed.
-- Required libraries for camera (esp-camera), LTE. For the A7670X, we're using a custom fork of tinyGSM by Lewsis Xhe that is [here](https://github.com/lewisxhe/TinyGSM-fork/tree/master)
-- This repository (`lte-cam`) cloned to your local development environment.
+- Required libraries LTE communication. For the A7670E, we're using a custom fork of tinyGSM by Lewis Xhe that is [here](https://github.com/lewisxhe/TinyGSM-fork/tree/master)
+- This repository (`lte-cam`) cloned to your local development environment (you can discard the "misc files" folder).
 
 ### Configuration Steps
 
-#### 1. Rename & Edit Secrets File
-
-1. **Rename** `secrets_example.h` to `secrets.h`:
-    ```
-    mv secrets_example.h secrets.h
-    ```
-2. **Edit `secrets.h`** and replace the example credentials with your own:
-    - LTE APN, username, and password (for your SIM provider)
-    - Telegram Bot Token
-    - Telegram User ID (the chat where photos will be sent)
-
-    > ⚠️ **Do NOT commit your actual `secrets.h` file to public repositories!**
-
-#### 2. Set Up Your Telegram Bot
+#### 1. Set Up Your Telegram Bot
 
 1. **Create a new bot using BotFather**  
     - Start a chat with [@BotFather](https://t.me/BotFather) on Telegram.
@@ -51,22 +38,24 @@ LTE-CAM is an open-source project for capturing photos at scheduled times using 
     - Send `/start`—you will receive your numeric user ID.
     - Use this ID in your `secrets.h` file (for the `TELEGRAM_CHAT_ID`).
 
-#### 3. Customize Photo Times
+#### 2. Rename & Edit .h Files
 
-Within the source code, you will find the following lines near the end:
+1. **Rename** `secrets_example.h` to `secrets.h`:
+    ```
+    mv secrets_example.h secrets.h
+    ```
+2. **Edit `secrets.h`** and replace the example credentials with your own:
+    - LTE APN, username, and password (for your SIM provider)
+    - Telegram Bot Token
+    - Telegram User ID (the chat where photos will be sent)
 
-```cpp
-int target1 = 10 * 3600; // 10:00 (10 AM)
-int target2 = 15 * 3600; // 15:00 (3 PM)
-```
+    > ⚠️ **Do NOT commit your actual `secrets.h` file to public repositories!**
+    
+   **Edit `utilities.h`** and uncomment the definition that mentions your board (for example, we have uncommented the line mentioning "LILYGO_A7670X_S3_STAN" for the lilygo ESP32-S3 A7670E)
 
-- `target1` and `target2` represent the **seconds since midnight** when a photo should be taken.
-- `10 * 3600` = 36,000 (i.e., 10 AM).
-- `15 * 3600` = 54,000 (i.e., 3 PM).
-- To change capture times, modify the `10` or `15` values to your desired **hour** (in 24-hour format).  
-  For example, for 8 AM and 6 PM:  
-  `int target1 = 8 * 3600;`  
-  `int target2 = 18 * 3600;`
+#### 3. Customize Wake Times
+
+In the "General settings" section of the code, you can define at what time the board will wake up.
 
 #### 4. Build & Flash
 
@@ -77,12 +66,11 @@ int target2 = 15 * 3600; // 15:00 (3 PM)
 
 - Insert your SIM card (if applicable).
 - Connect your camera module.
-- Power the device: it should connect to LTE, initialize the camera, send a photo, then go to sleep. It will then wake up and send photos at the scheduled times to your Telegram group.
+- Power the device: it should connect to LTE, initialize the camera, send a photo to the Telegram group, read the battery voltage reading and send it as a message, then go to sleep. It will then wake up and do the same routine at the scheduled timesp.
 
 ## Troubleshooting
-- Enable DEBUG_MODE in the initial parameters if needed
-- Ensure your SIM has active data and that your LTE antenna is properly connected.
+- Enable DEBUG_MODE in the initial parameters to bypass the schedule and do the routine every 2 minutes. Make sure to enable the serial monitor when flashing the board.
+- Ensure your SIM has active data and that your LTE antenna is properly connected. The camera ribbon cable can be a bit fiddly. Make sure it is properly seated.
 - Double-check your `secrets.h` credentials.
-- Make sure you’re using the correct microcontroller and firmware board configuration.
-- Follow your board manufacturer’s guides for flashing and hardware setup.
+- Make sure you’re using the correct microcontroller and firmware board configuration during flashing (notably pay attention to the RAM type, the programmer). Follow your board manufacturer’s guides for flashing and hardware setup.
 
