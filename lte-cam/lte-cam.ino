@@ -33,7 +33,7 @@ TinyGsmClient client(modem);
 
 int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec);
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
-void waitModemResponse(int timeoutMs, String expectedToken = "OK");
+bool waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
 bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec); // Removed timezone float
 bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec);
@@ -479,16 +479,17 @@ void sendPhotoViaBuiltInHTTP(camera_fb_t * fb) {
     waitModemResponse(2000);
 }
 
-void waitModemResponse(int timeoutMs, String expectedToken) {
+bool waitModemResponse(int timeoutMs, String expectedToken) {
     long start = millis();
     while(millis() - start < timeoutMs) {
         if(SerialAT.available()) {
             String res = SerialAT.readStringUntil('\n');
             res.trim();
             if(res.length() > 0) SerialMon.println("  [Modem] " + res);
-            if(res.indexOf(expectedToken) != -1) break;
+            if(res.indexOf(expectedToken) != -1) return true;
         }
     }
+    return false;
 }
 
 bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *sec) {
@@ -724,8 +725,24 @@ uint32_t readBatteryVoltage() {
 void sendTelegramMessage(String text) {
     SerialMon.println("Sending Telegram Message: " + text);
 
-    SerialAT.println("AT+HTTPINIT");
+    // Ensure HTTP is clean before starting
+    SerialAT.println("AT+HTTPTERM");
     waitModemResponse(2000);
+    delay(1000);
+
+    SerialAT.println("AT+HTTPINIT");
+    if (!waitModemResponse(2000)) {
+        SerialMon.println("HTTPINIT failed. Retrying...");
+        delay(1000);
+        SerialAT.println("AT+HTTPTERM");
+        waitModemResponse(2000);
+        delay(1000);
+        SerialAT.println("AT+HTTPINIT");
+        if (!waitModemResponse(2000)) {
+            SerialMon.println("HTTPINIT failed again. Aborting message.");
+            return;
+        }
+    }
 
     String url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
     SerialAT.println("AT+HTTPPARA=\"URL\",\"" + url + "\"");
