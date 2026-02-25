@@ -4,8 +4,8 @@
 // ==========================================
 //               PRIVATE SETTINGS
 // ==========================================
-const char GSM_PIN[]  = "1234";             
-const char apn[]      = "free"; 
+const char GSM_PIN[]  = "";
+const char apn[]      = "free";
 const char gprsUser[] = "";
 const char gprsPass[] = "";
 
