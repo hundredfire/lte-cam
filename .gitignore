@@ -1,0 +1,5 @@
+# Compiled test binaries
+tests/test_sleep_math
+
+# Local secrets file
+**/secrets.h
