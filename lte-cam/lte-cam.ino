@@ -1,4 +1,3 @@
-// #define TINY_GSM_MODEM_A7670  //already defined in utilities.h
 #define TINY_GSM_USE_GPRS true
 #define TINY_GSM_USE_WIFI false
 
