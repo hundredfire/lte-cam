@@ -621,7 +621,7 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                         *sec = timeStr.substring(secondColon + 1).toInt();
 
                         // Construct UTC time struct
-                        struct tm tm_utc;
+                        struct tm tm_utc = {0}; // Ensure zero initialization
                         tm_utc.tm_year = *year - 1900;
                         tm_utc.tm_mon = *month - 1;
                         tm_utc.tm_mday = *day;
@@ -647,7 +647,8 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                         tv.tv_usec = 0;
                         settimeofday(&tv, NULL);
 
-                        SerialMon.println("Native NTP Sync Successful & System Time Set!");
+                        SerialMon.printf("Native NTP Sync Successful & System Time Set: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                                        *year, *month, *day, *hour, *min, *sec);
                         return true;
                     }
                 }
