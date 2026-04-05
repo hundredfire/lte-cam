@@ -40,11 +40,38 @@ void test_calculateSleepSeconds() {
     assert(calculateSleepSecondsFromSchedules(8, 0, 0, singleSchedule, 1) == 14400);
     // 14:00:00 -> 12:00:00 next day is 10 + 12 = 22 hours (79200 seconds)
     assert(calculateSleepSecondsFromSchedules(14, 0, 0, singleSchedule, 1) == 79200);
+}
 
-    std::cout << "All tests passed!" << std::endl;
+void test_isWithinScheduleGracePeriod() {
+    const char* schedules[] = {"10:00", "17:00"};
+    int numSchedules = 2;
+    int gracePeriodSeconds = 900; // 15 minutes
+
+    // Exact match
+    assert(isWithinScheduleGracePeriod(10, 0, 0, schedules, numSchedules, gracePeriodSeconds) == true);
+
+    // Within grace period (5 minutes after)
+    assert(isWithinScheduleGracePeriod(10, 5, 0, schedules, numSchedules, gracePeriodSeconds) == true);
+
+    // At the end of grace period (15 minutes after)
+    assert(isWithinScheduleGracePeriod(10, 15, 0, schedules, numSchedules, gracePeriodSeconds) == true);
+
+    // Just after grace period (15 minutes and 1 second after)
+    assert(isWithinScheduleGracePeriod(10, 15, 1, schedules, numSchedules, gracePeriodSeconds) == false);
+
+    // Before schedule
+    assert(isWithinScheduleGracePeriod(9, 59, 59, schedules, numSchedules, gracePeriodSeconds) == false);
+
+    // Between schedules (not within grace)
+    assert(isWithinScheduleGracePeriod(12, 0, 0, schedules, numSchedules, gracePeriodSeconds) == false);
+
+    // Within grace of second schedule
+    assert(isWithinScheduleGracePeriod(17, 10, 0, schedules, numSchedules, gracePeriodSeconds) == true);
 }
 
 int main() {
     test_calculateSleepSeconds();
+    test_isWithinScheduleGracePeriod();
+    std::cout << "All tests passed!" << std::endl;
     return 0;
 }

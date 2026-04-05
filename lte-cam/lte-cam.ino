@@ -20,6 +20,8 @@
 // ==========================================
 const bool DEBUG_MODE = false;           
 const int  DEBUG_SLEEP_SECONDS = 120;   
+// If the device wakes up within this many seconds after a schedule, it will trigger a photo
+const int  WAKEUP_GRACE_PERIOD = 900;
 // Schedule times in HH:mm format
 const char* schedules[] = {"10:00", "17:00"};
 
@@ -233,8 +235,6 @@ void setup() {
         shouldTakeCapture = true;
     } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
         SerialMon.println("Woke up from EXT0 (Modem RI). Checking for triggers...");
-        // For now, we don't automatically capture on RI unless we find a specific SMS
-        // but the user says it sends a photo. We should check if we should capture.
     }
 
     if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 || wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
@@ -364,8 +364,13 @@ void setup() {
             // If we can't get local time, we might still proceed but sleep calculation will be wrong.
         }
 
-        // If we woke up from EXT0, check for "CAPTURE" SMS
+        // If we woke up from EXT0, check for "CAPTURE" SMS or if we are within grace period
         if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+            if (isWithinScheduleGracePeriod(hour, min, sec, schedules, sizeof(schedules) / sizeof(schedules[0]), WAKEUP_GRACE_PERIOD)) {
+                SerialMon.println("Woke up within schedule grace period. Triggering capture.");
+                shouldTakeCapture = true;
+            }
+
             SerialMon.println("Checking for 'CAPTURE' SMS trigger...");
             SerialAT.println("AT+CMGL=\"REC UNREAD\"");
             long start = millis();

@@ -42,3 +42,32 @@ inline int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, i
 
     return minDiff;
 }
+
+/**
+ * Checks if the current time is within a grace period after any scheduled time.
+ *
+ * @param currentHour The current hour (0-23).
+ * @param currentMin The current minute (0-59).
+ * @param currentSec The current second (0-59).
+ * @param schedules An array of schedule strings in "HH:mm" format.
+ * @param numSchedules The number of elements in the schedules array.
+ * @param gracePeriodSeconds The maximum number of seconds after a schedule to still trigger.
+ * @return True if the current time is within the grace period for any schedule.
+ */
+inline bool isWithinScheduleGracePeriod(int currentHour, int currentMin, int currentSec, const char* schedules[], int numSchedules, int gracePeriodSeconds) {
+    int currentSecondsOfDay = (currentHour * 3600) + (currentMin * 60) + currentSec;
+
+    for (int i = 0; i < numSchedules; i++) {
+        int h = 0, m = 0;
+        if (sscanf(schedules[i], "%d:%d", &h, &m) == 2) {
+            int scheduleSeconds = h * 3600 + m * 60;
+            int diff = currentSecondsOfDay - scheduleSeconds;
+
+            // Check if we are within the grace period (0 to gracePeriodSeconds)
+            if (diff >= 0 && diff <= gracePeriodSeconds) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
