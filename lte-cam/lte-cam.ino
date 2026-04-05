@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <Wire.h>                    
 #include "utilities.h"               
+#include "sleep_math.h"
 #include "esp_camera.h"
 #include <driver/gpio.h>
 #include <TinyGsmClient.h>
@@ -27,8 +28,6 @@ const float TIMEZONE_OFFSET = 1.0;
 
 #define SerialMon Serial
 TinyGsm modem(SerialAT);
-
-int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec);
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
 void waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
@@ -224,7 +223,7 @@ sleep_routine:
     gpio_deep_sleep_hold_en();
 #endif
 
-    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec) : 3600);
+    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec, schedules, sizeof(schedules) / sizeof(schedules[0])) : 3600);
     SerialMon.printf("Going to deep sleep for %d seconds...\n", sleepSeconds);
     esp_sleep_enable_timer_wakeup((uint64_t)sleepSeconds * 1000000ULL);
     delay(200);
@@ -446,36 +445,4 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec, fl
         SerialMon.println("NTP Sync Failed.");
         return false;
     }
-}
-
-int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec) {
-    int currentSecondsOfDay = (currentHour * 3600) + (currentMin * 60) + currentSec;
-    int minDiff = 24 * 3600 + 1; // Start with a value larger than a day
-    int earliestSchedule = 24 * 3600 + 1;
-    int numSchedules = sizeof(schedules) / sizeof(schedules[0]);
-
-    for (int i = 0; i < numSchedules; i++) {
-        String timeStr = String(schedules[i]);
-        int h = timeStr.substring(0, timeStr.indexOf(':')).toInt();
-        int m = timeStr.substring(timeStr.indexOf(':') + 1).toInt();
-        int scheduleSeconds = h * 3600 + m * 60;
-
-        if (scheduleSeconds < earliestSchedule) {
-            earliestSchedule = scheduleSeconds;
-        }
-
-        if (scheduleSeconds > currentSecondsOfDay) {
-            int diff = scheduleSeconds - currentSecondsOfDay;
-            if (diff < minDiff) {
-                minDiff = diff;
-            }
-        }
-    }
-
-    if (minDiff > 24 * 3600) {
-        // No future schedule today, wrap to the earliest schedule tomorrow
-        return (24 * 3600 - currentSecondsOfDay) + earliestSchedule;
-    }
-
-    return minDiff;
 }
