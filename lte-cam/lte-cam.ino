@@ -220,11 +220,25 @@ void setup() {
     const int MAX_RETRIES = 5;
     bool success = false;
     bool skipPowerOn = false;
+    bool shouldTakeCapture = false;
 
     // Check wakeup reason and try to reuse modem state if possible
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED) {
+        SerialMon.println("Woke up from Power On/Reset. Scheduling capture.");
+        shouldTakeCapture = true;
+    } else if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+        SerialMon.println("Woke up from Timer (Scheduled). Scheduling capture.");
+        shouldTakeCapture = true;
+    } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+        SerialMon.println("Woke up from EXT0 (Modem RI). Checking for triggers...");
+        // For now, we don't automatically capture on RI unless we find a specific SMS
+        // but the user says it sends a photo. We should check if we should capture.
+    }
+
     if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 || wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
-         SerialMon.println("Woke up from Sleep. Checking modem status...");
+         SerialMon.println("Checking modem status...");
 
 #ifdef MODEM_DTR_PIN
          gpio_hold_dis((gpio_num_t)MODEM_DTR_PIN);
@@ -350,6 +364,27 @@ void setup() {
             // If we can't get local time, we might still proceed but sleep calculation will be wrong.
         }
 
+        // If we woke up from EXT0, check for "CAPTURE" SMS
+        if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+            SerialMon.println("Checking for 'CAPTURE' SMS trigger...");
+            SerialAT.println("AT+CMGL=\"REC UNREAD\"");
+            long start = millis();
+            while (millis() - start < 5000) {
+                if (SerialAT.available()) {
+                    String line = SerialAT.readString();
+                    line.toUpperCase();
+                    if (line.indexOf("CAPTURE") != -1) {
+                        SerialMon.println("SMS 'CAPTURE' trigger found!");
+                        shouldTakeCapture = true;
+                        break;
+                    }
+                }
+            }
+            // Mark all read or delete triggers
+            SerialAT.println("AT+CMGD=1,4");
+            waitModemResponse(2000);
+        }
+
         success = true;
         break;
     }
@@ -361,30 +396,34 @@ void setup() {
         ESP.restart();
     }
 
-    // --- START OF WARM-UP LOOP ---
-    SerialMon.println("Warming up sensor for auto-exposure...");
-    for (int i = 0; i < 5; i++) { 
-        fb = esp_camera_fb_get(); 
+    if (shouldTakeCapture) {
+        // --- START OF WARM-UP LOOP ---
+        SerialMon.println("Warming up sensor for auto-exposure...");
+        for (int i = 0; i < 5; i++) {
+            fb = esp_camera_fb_get();
+            if (fb) {
+                esp_camera_fb_return(fb); // Immediately release the overexposed frame
+                fb = nullptr;
+                delay(200); // Short delay to let the sensor adjust its AGC/AEC
+            }
+        }
+        // --- END OF WARM-UP LOOP ---
+
+        fb = esp_camera_fb_get();
         if (fb) {
-            esp_camera_fb_return(fb); // Immediately release the overexposed frame
-            fb = nullptr; 
-            delay(200); // Short delay to let the sensor adjust its AGC/AEC
-        }
-    }
-    // --- END OF WARM-UP LOOP ---
+            SerialMon.printf("Photo taken! Size: %zu bytes. Uploading to Telegram...\n", fb->len);
+            sendPhotoViaBuiltInHTTP(fb);
+            esp_camera_fb_return(fb);
 
-    fb = esp_camera_fb_get();
-    if (fb) { 
-        SerialMon.printf("Photo taken! Size: %zu bytes. Uploading to Telegram...\n", fb->len);
-        sendPhotoViaBuiltInHTTP(fb); 
-        esp_camera_fb_return(fb); 
-
-        // Send Battery Status
-        uint32_t vol = readBatteryVoltage();
-        if (vol > 0) {
-             String msg = "Battery Voltage: " + String(vol) + " mV";
-             sendTelegramMessage(msg);
+            // Send Battery Status
+            uint32_t vol = readBatteryVoltage();
+            if (vol > 0) {
+                String msg = "Battery Voltage: " + String(vol) + " mV";
+                sendTelegramMessage(msg);
+            }
         }
+    } else {
+        SerialMon.println("Skipping capture for this wakeup (Unsolicited modem trigger).");
     }
 
     enterDeepSleep(hour, min, sec);
