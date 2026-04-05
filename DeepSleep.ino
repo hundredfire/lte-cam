@@ -185,6 +185,9 @@ void setup()
 
 void loop()
 {
+    // The loop is empty because the application uses deep sleep and all logic is in setup().
+    // Delay is added to yield and reduce power consumption in case deep sleep fails or is not reached.
+    delay(100);
 }
 
 #ifndef TINY_GSM_FORK_LIBRARY

@@ -390,7 +390,11 @@ void setup() {
     enterDeepSleep(hour, min, sec);
 }
 
-void loop() {}
+void loop() {
+    // The loop is empty because the application uses deep sleep and all logic is in setup().
+    // Delay is added to yield and reduce power consumption in case deep sleep fails or is not reached.
+    delay(100);
+}
 
 bool checkInternet() {
     SerialMon.print("Checking Internet connectivity (TCP -> google.com:80)... ");
