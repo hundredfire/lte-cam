@@ -214,7 +214,10 @@ void loop()
 #ifdef MODEM_CONNECTED_ADC_PIN
             uint16_t modem_voltage = modem.getBattVoltage();
             Serial.printf("Modem voltage:%u mV\n", modem_voltage);
-            snprintf(buf, 256, "%s Modem voltage:%u mV\n", buf, modem_voltage);
+            size_t len = strlen(buf);
+            if (len < 256) {
+                snprintf(buf + len, 256 - len, " Modem voltage:%u mV\n", modem_voltage);
+            }
 #endif
 
             // When connected to the USB, the battery voltage data read is not the real battery voltage,
