@@ -696,14 +696,19 @@ bool manualNtpSync(int *year, int *month, int *day, int *hour, int *min, int *se
                         tm_utc.tm_isdst = 0; // UTC has no DST
 
                         // FIX: Temporarily switch to UTC to interpret tm_utc correctly
-                        String oldTz = getenv("TZ");
+                        char* currentTz = getenv("TZ");
+                        String oldTz = (currentTz != NULL) ? String(currentTz) : "";
                         setenv("TZ", "UTC0", 1);
                         tzset();
 
                         time_t t_utc = mktime(&tm_utc);
 
                         // Restore User Timezone
-                        setenv("TZ", oldTz.c_str(), 1);
+                        if (currentTz != NULL) {
+                            setenv("TZ", oldTz.c_str(), 1);
+                        } else {
+                            unsetenv("TZ");
+                        }
                         tzset();
 
                         // Set system time (UTC)
