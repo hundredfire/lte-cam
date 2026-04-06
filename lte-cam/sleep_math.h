@@ -10,34 +10,36 @@
  * @param currentSec The current second (0-59).
  * @param schedules An array of schedule strings in "HH:mm" format.
  * @param numSchedules The number of elements in the schedules array.
+ * @param toleranceMinutes The number of minutes before or after a schedule that it is considered "fulfilled".
  * @return The number of seconds until the next scheduled time.
  */
-inline int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec, const char* schedules[], int numSchedules) {
+inline int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec, const char* schedules[], int numSchedules, int toleranceMinutes = 0) {
     int currentSecondsOfDay = (currentHour * 3600) + (currentMin * 60) + currentSec;
-    int minDiff = 24 * 3600 + 1; // Start with a value larger than a day
-    int earliestSchedule = 24 * 3600 + 1;
+    int minDiff = 24 * 3600 * 2; // Initialize with a very large value
+    int toleranceSeconds = toleranceMinutes * 60;
 
     for (int i = 0; i < numSchedules; i++) {
         int h = 0, m = 0;
         if (sscanf(schedules[i], "%d:%d", &h, &m) == 2) {
             int scheduleSeconds = h * 3600 + m * 60;
 
-            if (scheduleSeconds < earliestSchedule) {
-                earliestSchedule = scheduleSeconds;
+            int diff;
+            if (scheduleSeconds > currentSecondsOfDay) {
+                diff = scheduleSeconds - currentSecondsOfDay;
+            } else {
+                diff = (scheduleSeconds + 24 * 3600) - currentSecondsOfDay;
             }
 
-            if (scheduleSeconds > currentSecondsOfDay) {
-                int diff = scheduleSeconds - currentSecondsOfDay;
-                if (diff < minDiff) {
-                    minDiff = diff;
-                }
+            // If the schedule is upcoming within the tolerance window,
+            // we consider it fulfilled for this cycle and skip to its next occurrence tomorrow.
+            if (diff > 0 && diff <= toleranceSeconds) {
+                diff += 24 * 3600;
+            }
+
+            if (diff > 0 && diff < minDiff) {
+                minDiff = diff;
             }
         }
-    }
-
-    if (minDiff > 24 * 3600) {
-        // No future schedule today, wrap to the earliest schedule tomorrow
-        return (24 * 3600 - currentSecondsOfDay) + earliestSchedule;
     }
 
     return minDiff;

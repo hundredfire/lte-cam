@@ -40,6 +40,26 @@ void test_calculateSleepSeconds() {
     assert(calculateSleepSecondsFromSchedules(8, 0, 0, singleSchedule, 1) == 14400);
     // 14:00:00 -> 12:00:00 next day is 10 + 12 = 22 hours (79200 seconds)
     assert(calculateSleepSecondsFromSchedules(14, 0, 0, singleSchedule, 1) == 79200);
+
+    // Test case 8: Tolerance skipping
+    // Target schedule is 10:00. Time is 09:59:00. Tolerance is 2 minutes.
+    // Since 09:59 is within tolerance, it skips 10:00 and calculates time until 17:00 (7 hours and 1 minute = 25260 seconds).
+    assert(calculateSleepSecondsFromSchedules(9, 59, 0, schedules, numSchedules, 2) == 25260);
+
+    // Target schedule is 10:00. Time is 10:01:00. Tolerance is 2 minutes.
+    // Since 10:01 is within tolerance, it skips 10:00 and calculates time until 17:00 (6 hours and 59 minutes = 25140 seconds).
+    assert(calculateSleepSecondsFromSchedules(10, 1, 0, schedules, numSchedules, 2) == 25140);
+
+    // Target schedule is 17:00. Time is 16:59:00. Tolerance is 2 minutes.
+    // Skip 17:00 and calculate until 10:00 next day (7 hours until midnight + 10 hours = 17 hours and 1 minute = 61260 seconds).
+    assert(calculateSleepSecondsFromSchedules(16, 59, 0, schedules, numSchedules, 2) == 61260);
+
+    // Test wrap around with tolerance (Target is 00:01, time is 23:59:00 previous day).
+    const char* midnightSchedule[] = {"00:01"};
+    // Without tolerance: time to next is 2 minutes = 120 seconds.
+    assert(calculateSleepSecondsFromSchedules(23, 59, 0, midnightSchedule, 1, 0) == 120);
+    // With 3 minute tolerance, it skips 00:01 today and aims for 00:01 next day (24 hours + 2 minutes = 86520 seconds).
+    assert(calculateSleepSecondsFromSchedules(23, 59, 0, midnightSchedule, 1, 3) == 86520);
 }
 
 void test_isWithinScheduleGracePeriod() {
