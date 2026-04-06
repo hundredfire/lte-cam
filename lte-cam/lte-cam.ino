@@ -21,6 +21,8 @@ const bool DEBUG_MODE = false;
 const int  DEBUG_SLEEP_SECONDS = 120;   
 // If the device wakes up within this many seconds after a schedule, it will trigger a photo
 const int  WAKEUP_GRACE_PERIOD = 900;
+// Tolerance in minutes to prevent double-firing due to early wakeups
+const int  WAKE_TOLERANCE_MINUTES = 2;
 // Schedule times in HH:mm format
 const char* schedules[] = {"10:00", "17:00"};
 
@@ -141,7 +143,7 @@ void enterDeepSleep(int hour, int min, int sec) {
     gpio_deep_sleep_hold_en();
 #endif
 
-    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec, schedules, sizeof(schedules) / sizeof(schedules[0])) : 3600);
+    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec, schedules, sizeof(schedules) / sizeof(schedules[0]), WAKE_TOLERANCE_MINUTES) : 3600);
     SerialMon.printf("Going to deep sleep for %d seconds...\n", sleepSeconds);
 
     // Enable Timer Wakeup (for schedule)
