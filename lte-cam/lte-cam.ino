@@ -90,6 +90,11 @@ void powerOnModem() {
 void enterDeepSleep(int hour, int min, int sec) {
     SerialMon.println("Preparing for Deep Sleep (SMS Wakeup Mode)...");
 
+    SerialAT.println("AT+CFGRI=0");
+    if (waitModemResponse(2000)) {
+        SerialMon.println("Modem RI disabled (CFGRI=0).");
+    }
+
     // Enable Sleep Mode on Modem
     // AT+CSCLK=1 : Enable sleep mode. Modem sleeps when DTR is high.
     SerialAT.println("AT+CSCLK=1");
