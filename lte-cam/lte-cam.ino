@@ -238,7 +238,8 @@ void setup() {
         SerialMon.println("Woke up from Timer (Scheduled). Scheduling capture.");
         shouldTakeCapture = true;
     } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
-        SerialMon.println("Woke up from EXT0 (Modem RI). Checking for triggers...");
+        SerialMon.println("Woke up from EXT0 (Modem RI). Scheduling capture.");
+        shouldTakeCapture = true;
     }
 
     if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 || wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
@@ -366,32 +367,6 @@ void setup() {
         } else {
             SerialMon.println("Failed to obtain local time from system clock.");
             // If we can't get local time, we might still proceed but sleep calculation will be wrong.
-        }
-
-        // If we woke up from EXT0, check for "CAPTURE" SMS or if we are within grace period
-        if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
-            if (isWithinScheduleGracePeriod(hour, min, sec, schedules, sizeof(schedules) / sizeof(schedules[0]), WAKEUP_GRACE_PERIOD)) {
-                SerialMon.println("Woke up within schedule grace period. Triggering capture.");
-                shouldTakeCapture = true;
-            }
-
-            SerialMon.println("Checking for 'CAPTURE' SMS trigger...");
-            SerialAT.println("AT+CMGL=\"REC UNREAD\"");
-            long start = millis();
-            while (millis() - start < 5000) {
-                if (SerialAT.available()) {
-                    String line = SerialAT.readString();
-                    line.toUpperCase();
-                    if (line.indexOf("CAPTURE") != -1) {
-                        SerialMon.println("SMS 'CAPTURE' trigger found!");
-                        shouldTakeCapture = true;
-                        break;
-                    }
-                }
-            }
-            // Mark all read or delete triggers
-            SerialAT.println("AT+CMGD=1,4");
-            waitModemResponse(2000);
         }
 
         success = true;
