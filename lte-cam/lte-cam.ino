@@ -9,6 +9,7 @@
 #include <driver/gpio.h>
 #include <TinyGsmClient.h>
 #include <esp32-hal-adc.h>
+#include "sleep_math.h"
 
 // Load our private credentials
 #include "secrets.h"
@@ -18,6 +19,8 @@
 // ==========================================
 const bool DEBUG_MODE = false;           
 const int  DEBUG_SLEEP_SECONDS = 120;   
+// If the device wakes up within this many seconds after a schedule, it will trigger a photo
+const int  WAKEUP_GRACE_PERIOD = 900;
 // Schedule times in HH:mm format
 const char* schedules[] = {"10:00", "17:00"};
 
@@ -30,7 +33,6 @@ const char* TZ_INFO = "CET-1CEST,M3.5.0,M10.5.0/3";
 TinyGsm modem(SerialAT);
 TinyGsmClient client(modem);
 
-int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec);
 void sendPhotoViaBuiltInHTTP(camera_fb_t * fb);
 bool waitModemResponse(int timeoutMs, String expectedToken = "OK");
 bool setCameraPower(bool enable);
@@ -134,7 +136,7 @@ void enterDeepSleep(int hour, int min, int sec) {
     gpio_deep_sleep_hold_en();
 #endif
 
-    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec) : 3600);
+    int sleepSeconds = (DEBUG_MODE) ? DEBUG_SLEEP_SECONDS : ((hour != -1) ? calculateSleepSecondsFromSchedules(hour, min, sec, schedules, sizeof(schedules) / sizeof(schedules[0])) : 3600);
     SerialMon.printf("Going to deep sleep for %d seconds...\n", sleepSeconds);
 
     // Enable Timer Wakeup (for schedule)
@@ -219,11 +221,23 @@ void setup() {
     const int MAX_RETRIES = 5;
     bool success = false;
     bool skipPowerOn = false;
+    bool shouldTakeCapture = false;
 
     // Check wakeup reason and try to reuse modem state if possible
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED) {
+        SerialMon.println("Woke up from Power On/Reset. Scheduling capture.");
+        shouldTakeCapture = true;
+    } else if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+        SerialMon.println("Woke up from Timer (Scheduled). Scheduling capture.");
+        shouldTakeCapture = true;
+    } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+        SerialMon.println("Woke up from EXT0 (Modem RI). Checking for triggers...");
+    }
+
     if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 || wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
-         SerialMon.println("Woke up from Sleep. Checking modem status...");
+         SerialMon.println("Checking modem status...");
 
 #ifdef MODEM_DTR_PIN
          gpio_hold_dis((gpio_num_t)MODEM_DTR_PIN);
@@ -349,6 +363,32 @@ void setup() {
             // If we can't get local time, we might still proceed but sleep calculation will be wrong.
         }
 
+        // If we woke up from EXT0, check for "CAPTURE" SMS or if we are within grace period
+        if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+            if (isWithinScheduleGracePeriod(hour, min, sec, schedules, sizeof(schedules) / sizeof(schedules[0]), WAKEUP_GRACE_PERIOD)) {
+                SerialMon.println("Woke up within schedule grace period. Triggering capture.");
+                shouldTakeCapture = true;
+            }
+
+            SerialMon.println("Checking for 'CAPTURE' SMS trigger...");
+            SerialAT.println("AT+CMGL=\"REC UNREAD\"");
+            long start = millis();
+            while (millis() - start < 5000) {
+                if (SerialAT.available()) {
+                    String line = SerialAT.readString();
+                    line.toUpperCase();
+                    if (line.indexOf("CAPTURE") != -1) {
+                        SerialMon.println("SMS 'CAPTURE' trigger found!");
+                        shouldTakeCapture = true;
+                        break;
+                    }
+                }
+            }
+            // Mark all read or delete triggers
+            SerialAT.println("AT+CMGD=1,4");
+            waitModemResponse(2000);
+        }
+
         success = true;
         break;
     }
@@ -360,30 +400,34 @@ void setup() {
         ESP.restart();
     }
 
-    // --- START OF WARM-UP LOOP ---
-    SerialMon.println("Warming up sensor for auto-exposure...");
-    for (int i = 0; i < 5; i++) { 
-        fb = esp_camera_fb_get(); 
+    if (shouldTakeCapture) {
+        // --- START OF WARM-UP LOOP ---
+        SerialMon.println("Warming up sensor for auto-exposure...");
+        for (int i = 0; i < 5; i++) {
+            fb = esp_camera_fb_get();
+            if (fb) {
+                esp_camera_fb_return(fb); // Immediately release the overexposed frame
+                fb = nullptr;
+                delay(200); // Short delay to let the sensor adjust its AGC/AEC
+            }
+        }
+        // --- END OF WARM-UP LOOP ---
+
+        fb = esp_camera_fb_get();
         if (fb) {
-            esp_camera_fb_return(fb); // Immediately release the overexposed frame
-            fb = nullptr; 
-            delay(200); // Short delay to let the sensor adjust its AGC/AEC
-        }
-    }
-    // --- END OF WARM-UP LOOP ---
+            SerialMon.printf("Photo taken! Size: %zu bytes. Uploading to Telegram...\n", fb->len);
+            sendPhotoViaBuiltInHTTP(fb);
+            esp_camera_fb_return(fb);
 
-    fb = esp_camera_fb_get();
-    if (fb) { 
-        SerialMon.printf("Photo taken! Size: %zu bytes. Uploading to Telegram...\n", fb->len);
-        sendPhotoViaBuiltInHTTP(fb); 
-        esp_camera_fb_return(fb); 
-
-        // Send Battery Status
-        uint32_t vol = readBatteryVoltage();
-        if (vol > 0) {
-             String msg = "Battery Voltage: " + String(vol) + " mV";
-             sendTelegramMessage(msg);
+            // Send Battery Status
+            uint32_t vol = readBatteryVoltage();
+            if (vol > 0) {
+                String msg = "Battery Voltage: " + String(vol) + " mV";
+                sendTelegramMessage(msg);
+            }
         }
+    } else {
+        SerialMon.println("Skipping capture for this wakeup (Unsolicited modem trigger).");
     }
 
     enterDeepSleep(hour, min, sec);
@@ -757,38 +801,6 @@ bool syncTime(int *year, int *month, int *day, int *hour, int *min, int *sec) {
 
     SerialMon.println("NTP Sync Failed.");
     return false;
-}
-
-int calculateSleepSecondsFromSchedules(int currentHour, int currentMin, int currentSec) {
-    int currentSecondsOfDay = (currentHour * 3600) + (currentMin * 60) + currentSec;
-    int minDiff = 24 * 3600 + 1; // Start with a value larger than a day
-    int earliestSchedule = 24 * 3600 + 1;
-    int numSchedules = sizeof(schedules) / sizeof(schedules[0]);
-
-    for (int i = 0; i < numSchedules; i++) {
-        String timeStr = String(schedules[i]);
-        int h = timeStr.substring(0, timeStr.indexOf(':')).toInt();
-        int m = timeStr.substring(timeStr.indexOf(':') + 1).toInt();
-        int scheduleSeconds = h * 3600 + m * 60;
-
-        if (scheduleSeconds < earliestSchedule) {
-            earliestSchedule = scheduleSeconds;
-        }
-
-        if (scheduleSeconds > currentSecondsOfDay) {
-            int diff = scheduleSeconds - currentSecondsOfDay;
-            if (diff < minDiff) {
-                minDiff = diff;
-            }
-        }
-    }
-
-    if (minDiff > 24 * 3600) {
-        // No future schedule today, wrap to the earliest schedule tomorrow
-        return (24 * 3600 - currentSecondsOfDay) + earliestSchedule;
-    }
-
-    return minDiff;
 }
 
 uint32_t readBatteryVoltage() {
