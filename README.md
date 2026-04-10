@@ -68,7 +68,7 @@ LTE-CAM is an open-source project for capturing photos at scheduled times using 
 
 - Insert your SIM card (if applicable).
 - Connect your camera module.
-- Power the device: it should connect to LTE, initialize the camera, send a photo to the Telegram group, read the battery voltage reading and send it as a message, then go to sleep. It will then wake up and do the same routine at the scheduled timesp.
+- Power the device: it should connect to LTE, initialize the camera (takes one photo to set auto-exposure and a second one that will be sent), send a photo to the Telegram group, read the battery voltage reading and send it as a message, then go to sleep. It will then wake up and do the same routine at the scheduled times.
 
 ## Troubleshooting
 - Enable DEBUG_MODE in the initial parameters to bypass the schedule and do the routine every 2 minutes. Make sure to enable the serial monitor when flashing the board. The 2 minutes delay can be changed with DEBUG_SLEEP_SECONDS.
