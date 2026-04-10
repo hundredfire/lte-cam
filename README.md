@@ -53,9 +53,11 @@ LTE-CAM is an open-source project for capturing photos at scheduled times using 
     
    **Edit `utilities.h`** and uncomment the definition that mentions your board (for example, we have uncommented the line mentioning "LILYGO_A7670X_S3_STAN" for the lilygo ESP32-S3 A7670E)
 
-#### 3. Customize Wake Times
+#### 3. Customize parameters (wake up time and more)
 
-In the "General settings" section of the code, you can define at what time the board will wake up.
+- In the "General settings" section of the code, you can define at what time the board will wake up.
+- Timezones are defined with TZ_INFO (see https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv for more)
+- The internal clock of the lilygo A7670E tends to stray by a few minutes and the sleep duration can be off. We added WAKEUP_GRACE_PERIOD and WAKE_TOLERANCE_MINUTES as separate tolerance margins (for late and early wakes respectively) that can be defined (in seconds). This might not be necessary in boards with an internal crystal.
 
 #### 4. Build & Flash
 
@@ -69,7 +71,7 @@ In the "General settings" section of the code, you can define at what time the b
 - Power the device: it should connect to LTE, initialize the camera, send a photo to the Telegram group, read the battery voltage reading and send it as a message, then go to sleep. It will then wake up and do the same routine at the scheduled timesp.
 
 ## Troubleshooting
-- Enable DEBUG_MODE in the initial parameters to bypass the schedule and do the routine every 2 minutes. Make sure to enable the serial monitor when flashing the board.
+- Enable DEBUG_MODE in the initial parameters to bypass the schedule and do the routine every 2 minutes. Make sure to enable the serial monitor when flashing the board. The 2 minutes delay can be changed with DEBUG_SLEEP_SECONDS.
 - Ensure your SIM has active data and that your LTE antenna is properly connected. The camera ribbon cable can be a bit fiddly. Make sure it is properly seated.
 - Double-check your `secrets.h` credentials.
 - Make sure you’re using the correct microcontroller and firmware board configuration during flashing (notably pay attention to the RAM type, the programmer). Follow your board manufacturer’s guides for flashing and hardware setup.
