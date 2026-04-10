@@ -22,7 +22,7 @@ LTE-CAM is an open-source project for capturing photos at scheduled times using 
 
 - PlatformIO or Arduino IDE installed.
 - Required libraries LTE communication. For the A7670E, we're using a custom fork of tinyGSM by Lewis He that is [here](https://github.com/lewisxhe/TinyGSM-fork/tree/master)
-- This repository (`lte-cam`) cloned to your local development environment (you can discard the "misc files" folder).
+- This repository (the project files are located in the folder `lte-cam`) cloned to your local development environment (you can discard the "example projects" folder).
 
 ### Configuration Steps
 
