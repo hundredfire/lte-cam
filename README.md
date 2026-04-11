@@ -13,16 +13,14 @@ LTE-CAM is an open-source project for capturing photos at scheduled times or on 
 
 ### Hardware Requirements
 
-- A supported microcontroller (e.g., ESP32, ESP8266, or equivalent) with camera support and LTE connectivity (we only tested the lilygo ESP32-S# A7670E).*
+- A supported microcontroller (e.g., ESP32 or equivalent) with camera support and LTE connectivity (we only tested the lilygo ESP32-S3 A7670E).
 - Supported camera module (e.g., OV2640).
 - SIM card with data plan.
-
-*The required hardware may differ based on the specific code; refer to your board/module's documentation for compatibility.
 
 ### Software Prerequisites
 
 - PlatformIO or Arduino IDE installed.
-- Required libraries LTE communication. For the A7670E, we're using a custom fork of tinyGSM by Lewis He that is [here](https://github.com/lewisxhe/TinyGSM-fork/tree/master)
+- Required libraries for LTE communication. For the lilygo A7670X, we're using a custom fork of tinyGSM by Lewis He that is [here](https://github.com/lewisxhe/TinyGSM-fork/tree/master)
 - This repository (the project files are located in the folder `lte-cam`) cloned to your local development environment (you can discard the "example projects" folder).
 
 ### Configuration Steps
@@ -50,7 +48,7 @@ LTE-CAM is an open-source project for capturing photos at scheduled times or on 
     - Telegram Bot Token
     - Telegram User ID (the chat where photos will be sent)
 
-    > ⚠️ **Do NOT commit your actual `secrets.h` file to public repositories!**
+    > ⚠️ ** If you fork this project, do NOT commit your actual `secrets.h` file to public repositories!**
     
    **Edit `utilities.h`** and uncomment the definition that mentions your board (for example, we have uncommented the line mentioning "LILYGO_A7670X_S3_STAN" for the lilygo ESP32-S3 A7670E)
 
@@ -69,11 +67,21 @@ LTE-CAM is an open-source project for capturing photos at scheduled times or on 
 
 - Insert your SIM card (if applicable).
 - Connect your camera module.
-- Power the device: it should connect to LTE, initialize the camera (takes one photo to set auto-exposure and a second one that will be sent), send a photo to the Telegram group, read the battery voltage reading and send it as a message, then go to sleep. It will then wake up and do the same routine at the scheduled times or when triggered by an SMS or phone call.
+- Power the device: it should connect to LTE, initialize the camera (takes one photo to set auto-exposure and a second one that will be sent), send a photo to the Telegram group, read the battery voltage reading and send it as a second message, then go to sleep. It will then wake up and do the same routine at the scheduled times or when triggered by an SMS or phone call.
 
 ## Troubleshooting
 - Enable DEBUG_MODE in the initial parameters to bypass the schedule and do the routine every 2 minutes. Make sure to enable the serial monitor when flashing the board. The 2 minutes delay can be changed with DEBUG_SLEEP_SECONDS.
 - Ensure your SIM has active data and that your LTE antenna is properly connected. The camera ribbon cable can be a bit fiddly. Make sure it is properly seated.
 - Double-check your `secrets.h` credentials.
 - Make sure you’re using the correct microcontroller and firmware board configuration during flashing (notably pay attention to the RAM type, the programmer). Follow your board manufacturer’s guides for flashing and hardware setup.
+
+## Future Features
+
+* **Image Enhancements:**
+  - Parameter to change photo orientation
+  - Increase photo resolution
+* **SMS Remote Control:**
+  - Change schedule
+  - Update photo parameters (resolution/orientation)
+* **Implement satellite cameras**
 
