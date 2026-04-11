@@ -26,6 +26,9 @@ const int  WAKE_TOLERANCE_MINUTES = 2;
 // Schedule times in HH:mm format
 const char* schedules[] = {"10:00", "17:00"};
 
+// Photo rotation (0, 90, 180, 270)
+const int IMAGE_ROTATION = 0;
+
 // Timezone handling using POSIX standard (Paris: CET/CEST)
 // See https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv for more
 const char* TZ_INFO = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -491,7 +494,41 @@ void sendPhotoViaBuiltInHTTP(camera_fb_t * fb) {
     
     String bodyTail = "\r\n--" + boundary + "--\r\n";
     
+    // EXIF Orientation App1 segment (36 bytes total)
+    uint8_t exifData[36] = {
+        0xFF, 0xE1,             // APP1 marker
+        0x00, 0x22,             // Length (34 bytes: size of length field + payload, excludes 2-byte marker)
+        0x45, 0x78, 0x69, 0x66, // "Exif"
+        0x00, 0x00,             // Pad
+        0x49, 0x49,             // Byte order: Little Endian ("II")
+        0x2A, 0x00,             // TIFF magic number
+        0x08, 0x00, 0x00, 0x00, // Offset to 0th IFD
+        0x01, 0x00,             // Number of entries: 1
+        0x12, 0x01,             // Tag: Orientation
+        0x03, 0x00,             // Type: Short (16-bit)
+        0x01, 0x00, 0x00, 0x00, // Count: 1
+        0x01, 0x00, 0x00, 0x00, // Value/Offset (Default: 1 = Normal)
+        0x00, 0x00, 0x00, 0x00  // Offset to next IFD (none)
+    };
+
+    bool injectExif = false;
+    if (IMAGE_ROTATION == 90) {
+        exifData[28] = 6;
+        injectExif = true;
+    } else if (IMAGE_ROTATION == 180) {
+        exifData[28] = 3;
+        injectExif = true;
+    } else if (IMAGE_ROTATION == 270) {
+        exifData[28] = 8;
+        injectExif = true;
+    }
+
     uint32_t totalLen = bodyHead.length() + fb->len + bodyTail.length();
+    if (injectExif && fb->len >= 2 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8) {
+        totalLen += sizeof(exifData);
+    } else {
+        injectExif = false;
+    }
 
     SerialAT.println("AT+HTTPINIT");
     waitModemResponse(2000);
@@ -533,6 +570,17 @@ void sendPhotoViaBuiltInHTTP(camera_fb_t * fb) {
         
         uint8_t *buf = fb->buf;
         size_t len = fb->len;
+
+        if (injectExif) {
+            // Write SOI (Start of Image)
+            SerialAT.write(buf, 2);
+            // Inject EXIF App1 Segment
+            SerialAT.write(exifData, sizeof(exifData));
+            // Adjust pointer and length to write the rest of the image
+            buf += 2;
+            len -= 2;
+        }
+
         size_t chunkSize = 1024;
         for (size_t i = 0; i < len; i += chunkSize) {
             size_t toSend = (len - i > chunkSize) ? chunkSize : (len - i);
