@@ -1,10 +1,11 @@
 # LTE-CAM
 
-LTE-CAM is an open-source project for capturing photos at scheduled times using a microcontroller (we're using an ESP32-S3) and sending them to a Telegram chat or bot via LTE connectivity. Typical use-cases include remote wildlife monitoring, off-grid time-lapse photography, or any scenario where you need to automatically capture photos and receive them remotely using the Telegram messaging platform.
+LTE-CAM is an open-source project for capturing photos at scheduled times or on demand (via SMS/call) using a microcontroller (we're using an ESP32-S3) and sending them to a Telegram chat or bot via LTE connectivity. Typical use-cases include remote wildlife monitoring, off-grid time-lapse photography, or any scenario where you need to automatically capture photos and receive them remotely using the Telegram messaging platform.
 
 ## Features
 
 - Automates camera captures at user-defined times (e.g., 10 AM and 5 PM by default).
+- Triggers on-demand captures by sending an SMS or calling the device's phone number.
 - Sends captured photos via Telegram bot to your personal account or a group.
 - Sends battery voltage reading for battery monitoring.
 
@@ -68,7 +69,7 @@ LTE-CAM is an open-source project for capturing photos at scheduled times using 
 
 - Insert your SIM card (if applicable).
 - Connect your camera module.
-- Power the device: it should connect to LTE, initialize the camera (takes one photo to set auto-exposure and a second one that will be sent), send a photo to the Telegram group, read the battery voltage reading and send it as a message, then go to sleep. It will then wake up and do the same routine at the scheduled times.
+- Power the device: it should connect to LTE, initialize the camera (takes one photo to set auto-exposure and a second one that will be sent), send a photo to the Telegram group, read the battery voltage reading and send it as a message, then go to sleep. It will then wake up and do the same routine at the scheduled times or when triggered by an SMS or phone call.
 
 ## Troubleshooting
 - Enable DEBUG_MODE in the initial parameters to bypass the schedule and do the routine every 2 minutes. Make sure to enable the serial monitor when flashing the board. The 2 minutes delay can be changed with DEBUG_SLEEP_SECONDS.
